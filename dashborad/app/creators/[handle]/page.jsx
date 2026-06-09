@@ -2,13 +2,13 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 
-import { getCampaign } from '../../../lib/db';
+import { resolveCampaign } from '../../../lib/campaigns';
 import { getCreatorDetail, saveCreatorNote } from '../../../lib/queries';
 
 export const dynamic = 'force-dynamic';
 
-export default async function CreatorDetailPage({ params }) {
-  const campaign = getCampaign();
+export default async function CreatorDetailPage({ params, searchParams }) {
+  const campaign = resolveCampaign(searchParams?.campaign);
   const handle = String(params.handle || '').replace(/^@/, '');
   const detail = await getCreatorDetail({ handle, campaign });
   if (!detail) notFound();
@@ -35,7 +35,7 @@ export default async function CreatorDetailPage({ params }) {
         </div>
       </header>
       <main>
-        <Link href="/">Back to dashboard</Link>
+        <Link href={`/?campaign=${campaign}`}>Back to dashboard</Link>
 
         <section className="split detail-split">
           <section className="panel">

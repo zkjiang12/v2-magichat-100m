@@ -1,8 +1,14 @@
 import fs from 'node:fs';
 
+import { getCampaignDefinition } from './campaigns/index.js';
+
 loadLocalEnv();
 
 export function getConfig() {
+  const campaign = process.env.OUTBOUND_CAMPAIGN || 'day_in_life_creators';
+  const campaignDefinition = getCampaignDefinition(campaign);
+  const campaignDefaults = campaignDefinition.defaults;
+
   const config = {
     apifyToken: process.env.APIFY_TOKEN,
     openaiApiKey: process.env.OPENAI_API_KEY,
@@ -21,18 +27,35 @@ export function getConfig() {
       'scraping_solutions/instagram-scraper-followers-following',
     instagramFollowingMode: process.env.INSTAGRAM_FOLLOWING_MODE || 'following',
     instagramFollowingLimit: Number(process.env.INSTAGRAM_FOLLOWING_LIMIT || 1000),
-    instagramFollowerThreshold: Number(process.env.INSTAGRAM_FOLLOWER_THRESHOLD || 10000),
-    instagramMedianViewsThreshold: Number(process.env.INSTAGRAM_MEDIAN_VIEWS_THRESHOLD || 10000),
-    instagramRequireVerified: parseBoolean(process.env.INSTAGRAM_REQUIRE_VERIFIED ?? 'true'),
-    instagramProfilePrefilter: parseBoolean(process.env.INSTAGRAM_PROFILE_PREFILTER ?? 'true'),
-    instagramContentPrefilter: parseBoolean(process.env.INSTAGRAM_CONTENT_PREFILTER ?? 'true'),
+    instagramFollowerThreshold: Number(
+      process.env.INSTAGRAM_FOLLOWER_THRESHOLD || campaignDefaults.followerThreshold,
+    ),
+    instagramFollowerMax: process.env.INSTAGRAM_FOLLOWER_MAX
+      ? Number(process.env.INSTAGRAM_FOLLOWER_MAX)
+      : campaignDefaults.followerMax ?? null,
+    instagramMedianViewsThreshold: Number(
+      process.env.INSTAGRAM_MEDIAN_VIEWS_THRESHOLD || campaignDefaults.medianViewsThreshold,
+    ),
+    instagramRequireVerified: parseBoolean(
+      process.env.INSTAGRAM_REQUIRE_VERIFIED ?? String(campaignDefaults.requireVerified),
+    ),
+    instagramProfilePrefilter: parseBoolean(
+      process.env.INSTAGRAM_PROFILE_PREFILTER ?? String(campaignDefaults.profilePrefilter),
+    ),
+    instagramContentPrefilter: parseBoolean(
+      process.env.INSTAGRAM_CONTENT_PREFILTER ?? String(campaignDefaults.contentPrefilter),
+    ),
+    instagramScrapePosts: parseBoolean(
+      process.env.INSTAGRAM_SCRAPE_POSTS ?? String(campaignDefaults.scrapePosts),
+    ),
     instagramFollowingPrefilter: parseBoolean(process.env.INSTAGRAM_FOLLOWING_PREFILTER ?? 'true'),
     instagramResultsLimit: Number(process.env.INSTAGRAM_RESULTS_LIMIT || 3),
     openaiModel: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
     openaiPostLimit: Number(process.env.OPENAI_POST_LIMIT || 3),
     openaiMaxTextChars: Number(process.env.OPENAI_MAX_TEXT_CHARS || 320),
     databaseUrl: process.env.DATABASE_URL || null,
-    campaign: process.env.OUTBOUND_CAMPAIGN || 'day_in_life_creators',
+    campaign,
+    campaignDefinition,
     dashboardEnqueueStatus: process.env.DASHBOARD_ENQUEUE_STATUS || 'queued',
   };
 
@@ -63,6 +86,12 @@ export function getConfig() {
     config.instagramMedianViewsThreshold < 0
   ) {
     missing.push('INSTAGRAM_MEDIAN_VIEWS_THRESHOLD must be zero or a positive number');
+  }
+  if (
+    config.instagramFollowerMax !== null &&
+    (!Number.isFinite(config.instagramFollowerMax) || config.instagramFollowerMax <= 0)
+  ) {
+    missing.push('INSTAGRAM_FOLLOWER_MAX must be a positive number when set');
   }
   if (!Number.isFinite(config.openaiPostLimit) || config.openaiPostLimit < 1) {
     missing.push('OPENAI_POST_LIMIT must be a positive number');

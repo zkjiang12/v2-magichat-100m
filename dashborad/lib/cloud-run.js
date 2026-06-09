@@ -7,7 +7,7 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const METADATA_TOKEN_URL =
   'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 
-export async function triggerScraperCloudRunJob({ runId }) {
+export async function triggerScraperCloudRunJob({ runId, campaign }) {
   if (!runId) throw new Error('Cloud Run scraper trigger requires a run id.');
   return triggerCloudRunJob({
     label: 'scraper',
@@ -15,10 +15,11 @@ export async function triggerScraperCloudRunJob({ runId }) {
     region: process.env.SCRAPER_CLOUD_RUN_REGION,
     jobName: process.env.SCRAPER_CLOUD_RUN_JOB_NAME,
     args: ['npm', 'run', 'crawl', '--', '--run-id', runId],
+    env: campaign ? [{ name: 'OUTBOUND_CAMPAIGN', value: campaign }] : [],
   });
 }
 
-export async function triggerSenderCloudRunJob({ runId }) {
+export async function triggerSenderCloudRunJob({ runId, campaign }) {
   if (!runId) throw new Error('Cloud Run sender trigger requires a run id.');
   const provider = process.env.SENDER_CLOUD_RUN_PROVIDER || 'dry-run';
   return triggerCloudRunJob({
@@ -31,6 +32,7 @@ export async function triggerSenderCloudRunJob({ runId }) {
       { name: 'SENDER_PROVIDER', value: provider },
       { name: 'SENDER_LIVE_SENDS_ENABLED', value: process.env.SENDER_LIVE_SENDS_ENABLED || 'false' },
       { name: 'SENDER_WORKER_ID', value: `sender-cloud-${String(runId).slice(0, 8)}` },
+      ...(campaign ? [{ name: 'OUTBOUND_CAMPAIGN', value: campaign }] : []),
     ],
   });
 }

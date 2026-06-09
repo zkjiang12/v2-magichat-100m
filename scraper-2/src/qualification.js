@@ -22,13 +22,16 @@ export function buildProfileHardNoReview({ scrapedProfile, config }) {
     };
   }
 
-  const accountHardNo = detectHardNoAccount({
-    handle: scrapedProfile.handle,
-    name: scrapedProfile.creator.name,
-    bio: scrapedProfile.creator.bio,
-    businessCategoryName: scrapedProfile.creator.businessCategoryName,
-    categoryName: scrapedProfile.creator.categoryName,
-  });
+  const accountHardNo = detectHardNoAccount(
+    {
+      handle: scrapedProfile.handle,
+      name: scrapedProfile.creator.name,
+      bio: scrapedProfile.creator.bio,
+      businessCategoryName: scrapedProfile.creator.businessCategoryName,
+      categoryName: scrapedProfile.creator.categoryName,
+    },
+    config.campaignDefinition.hardNoTerms,
+  );
   if (accountHardNo.hardNo) {
     return {
       fitScore: 1,
@@ -61,10 +64,13 @@ export function buildContentHardNoReview({ scrapedProfile, config }) {
 export function annotateFollowingCandidateForPrefilter({ candidate, config }) {
   if (!config.instagramFollowingPrefilter) return candidate;
 
-  const accountHardNo = detectHardNoAccount({
-    handle: candidate.handle,
-    name: candidate.name,
-  });
+  const accountHardNo = detectHardNoAccount(
+    {
+      handle: candidate.handle,
+      name: candidate.name,
+    },
+    config.campaignDefinition.hardNoTerms,
+  );
   if (!accountHardNo.hardNo) return candidate;
 
   return {
@@ -74,11 +80,14 @@ export function annotateFollowingCandidateForPrefilter({ candidate, config }) {
   };
 }
 
-export function isKnownBelowFollowerThreshold({ candidate, config }) {
+export function isKnownOutsideFollowerRange({ candidate, config }) {
+  if (!config.instagramFollowingPrefilter || !Number.isFinite(candidate.followersCount)) {
+    return false;
+  }
+  if (candidate.followersCount <= config.instagramFollowerThreshold) return true;
   return (
-    config.instagramFollowingPrefilter &&
-    Number.isFinite(candidate.followersCount) &&
-    candidate.followersCount <= config.instagramFollowerThreshold
+    config.instagramFollowerMax !== null &&
+    candidate.followersCount >= config.instagramFollowerMax
   );
 }
 

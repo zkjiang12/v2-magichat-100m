@@ -11,15 +11,13 @@ import { normalizeHandle, scrapeInstagramProfile } from './instagram.js';
 import {
   annotateFollowingCandidateForPrefilter,
   buildScrapeHardNoReview,
-  isKnownBelowFollowerThreshold,
+  isKnownOutsideFollowerRange,
 } from './qualification.js';
 import { scoreCreatorDetailed } from './scorer.js';
 
-const SEED = 'yestheory';
 const LIMIT = 250;
 const FOLLOWING_LIMIT = 2000;
 const CONCURRENCY = 64;
-const OUTPUT_DIR = 'data/eval-runs/speed-cost';
 const APIFY_COST_SETTLE_MS = 10000;
 
 async function main() {
@@ -27,8 +25,13 @@ async function main() {
     throw new Error('eval:speed-cost does not accept arguments');
   }
 
-  const seed = normalizeHandle(SEED);
   const config = getConfig();
+  if (!config.campaignDefinition.speedCostSeed) {
+    throw new Error(
+      `Campaign ${config.campaign} has no speedCostSeed configured; set one in its campaign definition to run eval:speed-cost.`,
+    );
+  }
+  const seed = normalizeHandle(config.campaignDefinition.speedCostSeed);
   config.instagramFollowingLimit = FOLLOWING_LIMIT;
 
   const costTracker = createApifyCostTracker({ settleMs: APIFY_COST_SETTLE_MS });
@@ -81,18 +84,18 @@ async function main() {
     failedProfiles: processed.filter((result) => result.failed).length,
     acceptedSamples: sampleReviews({
       processed,
-      predicate: (result) => !result.failed && result.fitScore >= 3,
+      predicate: (result) => !result.failed && result.qualified,
     }),
     rejectedSamples: sampleReviews({
       processed,
-      predicate: (result) => !result.failed && result.fitScore <= 2,
+      predicate: (result) => !result.failed && !result.qualified,
     }),
     totalTimeMs,
     apifySummary: costTracker.summary(),
     openaiSummary: openaiUsageSummary,
   });
 
-  const savedPath = await saveReport({ seed, report });
+  const savedPath = await saveReport({ seed, report, campaign: config.campaign });
 
   console.log('\n=== Speed-Cost Eval ===');
   console.log(JSON.stringify(report, null, 2));
@@ -117,6 +120,7 @@ async function processCandidate({ candidate, index, total, config }) {
       return buildProcessedResult({
         handle: candidate.handle,
         review: hardNoReview,
+        config,
       });
     }
 
@@ -127,6 +131,7 @@ async function processCandidate({ candidate, index, total, config }) {
     return buildProcessedResult({
       handle: candidate.handle,
       review: scored.review,
+      config,
     });
   } catch (error) {
     console.error(`[${index + 1}/${total}] Failed @${candidate.handle}: ${error.message}`);
@@ -141,13 +146,13 @@ async function processCandidate({ candidate, index, total, config }) {
   }
 }
 
-function buildProcessedResult({ handle, review }) {
+function buildProcessedResult({ handle, review, config }) {
   return {
     handle,
     fitScore: review.fitScore,
     list: review.list,
     reasoning: review.reasoning,
-    qualified: review.fitScore >= 3,
+    qualified: config.campaignDefinition.accept(review),
     failed: false,
   };
 }
@@ -186,7 +191,7 @@ function filterCandidates({ candidates, config, limit }) {
 
     if (prefilteredCandidate.isPrivate === true) continue;
     if (config.instagramRequireVerified && prefilteredCandidate.isVerified !== true) continue;
-    if (isKnownBelowFollowerThreshold({ candidate: prefilteredCandidate, config })) continue;
+    if (isKnownOutsideFollowerRange({ candidate: prefilteredCandidate, config })) continue;
     if (prefilteredCandidate.hardNo === true) continue;
 
     queued.push(prefilteredCandidate);
@@ -213,8 +218,8 @@ async function runWithConcurrency({ items, concurrency, worker }) {
   return results;
 }
 
-async function saveReport({ seed, report }) {
-  const outputDir = path.resolve(OUTPUT_DIR);
+async function saveReport({ seed, report, campaign }) {
+  const outputDir = path.resolve('data/eval-runs/speed-cost', campaign);
   await fs.mkdir(outputDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outputPath = path.join(outputDir, `${seed}-${timestamp}.json`);

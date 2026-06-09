@@ -12,7 +12,7 @@ import {
 import {
   annotateFollowingCandidateForPrefilter,
   buildScrapeHardNoReview,
-  isKnownBelowFollowerThreshold,
+  isKnownOutsideFollowerRange,
 } from './qualification.js';
 import { scoreCreatorDetailed } from './scorer.js';
 import { saveEvaluationRecord } from './storage.js';
@@ -39,7 +39,7 @@ async function main() {
 
   const seedHandles = await parseHandles(options.handleArgs);
   if (!options.claimNext && !options.runId && seedHandles.length === 0) {
-    throw new Error('Usage: npm run crawl -- --run-id <uuid> OR npm run crawl -- --file seeds.txt OR npm run crawl -- @seed1 @seed2');
+    throw new Error('Usage: npm run crawl -- --run-id <uuid> OR npm run crawl -- --file seeds/day_in_life_creators.txt OR npm run crawl -- @seed1 @seed2');
   }
 
   if (options.followingLimit !== null) config.instagramFollowingLimit = options.followingLimit;
@@ -54,6 +54,7 @@ async function main() {
 
   const runContext = await loadOrCreatePostgresRun({
     recorder: dashboardRecorder,
+    campaign: config.campaign,
     runId: options.runId,
     claimNext: options.claimNext,
     seedHandles,
@@ -83,6 +84,7 @@ async function main() {
       [
         `Starting frontier crawl with ${options.qualificationWorkers} qualification workers`,
         `runId=${runId}`,
+        `campaign=${config.campaign}`,
         `followingLimit=${config.instagramFollowingLimit}`,
         `maxAccepted=${options.maxAccepted}`,
       ].join('; '),
@@ -300,7 +302,7 @@ async function enqueueDiscoveredCandidates({ state, sourceSeed, candidates, conf
       continue;
     }
 
-    if (isKnownBelowFollowerThreshold({ candidate: prefilteredCandidate, config })) {
+    if (isKnownOutsideFollowerRange({ candidate: prefilteredCandidate, config })) {
       state.seen[handle] = buildSeenRecord({
         handle,
         status: 'filtered_followers',
@@ -419,7 +421,9 @@ async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, 
     }
 
     const scored = await scoreCreatorDetailed({ scrapedProfile, config });
-    await config.dashboardRecorder?.recordOpenAiScore({ handle, scored });
+    if (config.campaignDefinition.scoring.mode === 'openai') {
+      await config.dashboardRecorder?.recordOpenAiScore({ handle, scored });
+    }
     const aiReview = scored.review;
     const saved = await saveEvaluation({ handle, scrapedProfile, aiReview });
     const accepted = await markScored({ state, handle, aiReview, saved, config, maxAccepted });
@@ -467,7 +471,7 @@ async function saveEvaluation({ handle, scrapedProfile, aiReview }) {
 
 async function markScored({ state, handle, aiReview, saved, config, maxAccepted }) {
   const record = state.seen[handle] || { handle };
-  const wouldAccept = aiReview.fitScore >= 3;
+  const wouldAccept = config.campaignDefinition.accept(aiReview);
   const accepted = wouldAccept && state.acceptedCount < maxAccepted;
   state.seen[handle] = {
     ...record,
@@ -543,6 +547,7 @@ function selectNextSeed(state) {
 
 async function loadOrCreatePostgresRun({
   recorder,
+  campaign,
   runId,
   claimNext,
   seedHandles,
@@ -554,6 +559,7 @@ async function loadOrCreatePostgresRun({
     const fallbackState = createInitialFrontierState({ seedHandles, maxAccepted });
     const run = await recorder.claimScraperRun({ runId, fallbackState });
     if (!run) throw new Error(`scraper_runs row not found: ${runId}`);
+    assertRunCampaignMatches({ run, campaign });
 
     const runState = Object.keys(run.state || {}).length > 0 ? run.state : fallbackState;
     return {
@@ -568,6 +574,7 @@ async function loadOrCreatePostgresRun({
   if (claimNext) {
     const run = await recorder.claimNextScraperRun();
     if (!run) return { noWork: true };
+    assertRunCampaignMatches({ run, campaign });
     const runSeedHandles = run.seed_handles || [];
     const maxAcceptedForRun = run.max_accepted || maxAccepted;
     const fallbackState = createInitialFrontierState({
@@ -593,6 +600,14 @@ async function loadOrCreatePostgresRun({
     state,
   });
   return { runId: run.id, state, maxAccepted, followingLimit, qualificationWorkers };
+}
+
+function assertRunCampaignMatches({ run, campaign }) {
+  if (run.campaign && run.campaign !== campaign) {
+    throw new Error(
+      `scraper_runs row ${run.id} belongs to campaign ${run.campaign}, but this worker is configured for ${campaign}. Set OUTBOUND_CAMPAIGN=${run.campaign} to process it.`,
+    );
+  }
 }
 
 async function markRunFailedBestEffort({ recorder, runId, state, saveState, error }) {
@@ -841,8 +856,8 @@ function parsePositiveInteger(value, optionName) {
 
 function printHelp() {
   console.log(`Usage:
-  npm run crawl -- --file seeds.txt
-  npm run crawl -- --file seeds.txt --following-limit 2000 --qualification-workers 20
+  npm run crawl -- --file seeds/day_in_life_creators.txt
+  npm run crawl -- --file seeds/day_in_life_creators.txt --following-limit 2000 --qualification-workers 20
 
 Options:
   --file <path>                  Seed handles file, one handle per line

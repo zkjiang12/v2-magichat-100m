@@ -4,10 +4,6 @@ const require = createRequire(import.meta.url);
 
 let pool = null;
 
-export function getCampaign() {
-  return process.env.OUTBOUND_CAMPAIGN || 'day_in_life_creators';
-}
-
 export async function query(text, params = []) {
   return getPool().query(text, params);
 }

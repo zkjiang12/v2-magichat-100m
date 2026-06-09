@@ -216,7 +216,7 @@ export function createDashboardRecorder({ config }) {
         externalKey: `${record.handle}:${record.status}:${record.scoredAt}`,
       });
 
-      if (record.status === 'accepted' && Number(record.fitScore) >= 3) {
+      if (record.status === 'accepted') {
         await upsertQueueItem(pool, {
           creatorId: creator.id,
           campaign,

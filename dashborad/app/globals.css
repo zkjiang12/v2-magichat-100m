@@ -967,6 +967,22 @@ th {
   margin-top: 0;
 }
 
+.eval-instructions {
+  margin-top: 32px;
+}
+
+.eval-instructions pre {
+  background: #060607;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 0;
+  overflow-x: auto;
+  padding: 18px 24px 22px;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 1100px) {
   .run-centers {
     grid-template-columns: 1fr;

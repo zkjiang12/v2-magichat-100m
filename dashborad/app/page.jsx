@@ -271,6 +271,7 @@ export default async function DashboardPage({ searchParams }) {
       </div>
 
       <CreatorKanbanBoard rows={data.acceptedCreators} />
+      <EvalInstructions />
     </Shell>
   );
 }
@@ -708,6 +709,26 @@ function CreatorKanbanBoard({ rows }) {
           </section>
         ))}
       </div>
+    </section>
+  );
+}
+
+function EvalInstructions() {
+  return (
+    <section className="band eval-instructions">
+      <div className="band-header">
+        <h2>Eval Commands</h2>
+      </div>
+      <pre>{`cd ~/Desktop/magichat-100m/v2/scraper-2
+
+# Eval scraper accuracy
+npm run eval:accuracy
+
+# Eval scraper speed, cost, and accuracy
+npm run eval:speed-cost
+
+# Eval the run sender
+# Send 1 message from the dashboard, then check the account it sent from.`}</pre>
     </section>
   );
 }

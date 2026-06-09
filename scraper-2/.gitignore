@@ -1,0 +1,6 @@
+.env
+node_modules/
+data/calibration.jsonl
+data/reviews/
+data/evaluations.jsonl
+data/evaluations/

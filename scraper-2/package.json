@@ -1,0 +1,18 @@
+{
+  "name": "magichat-instagram-calibrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval:accuracy": "node src/eval-accuracy.js",
+    "eval:speed-cost": "node src/eval-speed-cost.js",
+    "crawl": "node src/frontier-crawl.js",
+    "worker:claim": "node src/frontier-crawl.js --claim-next",
+    "dashboard:legacy": "node src/dashboard.js",
+    "review": "node src/cli.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

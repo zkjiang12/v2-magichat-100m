@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.git
+.git.backup
+node_modules
+npm-debug.log*
+Dockerfile
+data
+evals
+seeds.txt

@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.git
+.git.backup
+node_modules
+npm-debug.log*
+logs
+data
+*.png
+*.jpg
+*.jpeg
+*.webp
+accounts*.json
+*storage*.json

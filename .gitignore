@@ -1,0 +1,11 @@
+.dashboard-runs/
+
+.DS_Store
+.git.broken-*/
+.git.backup/
+node_modules/
+.next/
+.env
+.env.*
+.dashboard-runs/
+scraper-2/data/

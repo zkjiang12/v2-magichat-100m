@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 
+import HourlyBarChartBody from './HourlyBarChartBody';
+
 import { getCampaign } from '../lib/db';
 import {
   getCloudRunOperationStatus,
@@ -754,10 +756,25 @@ function Shell({ campaign, children }) {
 }
 
 function HourlyBarChart({ title, unit, bucketKind = 'hour', data: rows, segments, derive, formatValue, totals }) {
+  const isDaily = bucketKind === 'day';
+  const tooltipFormat = isDaily ? formatDay : formatHour;
+  const axisFormat = isDaily ? formatDayShort : formatHourShort;
+
   const buckets = (rows || []).map((row) => {
     const parts = derive(row);
     const total = segments.reduce((sum, seg) => sum + (Number(parts[seg.key]) || 0), 0);
-    return { hour: row.hour, parts, total };
+    const formattedParts = Object.fromEntries(
+      segments.map((seg) => [seg.key, formatValue(parts[seg.key] || 0)]),
+    );
+    return {
+      hour: row.hour,
+      parts,
+      total,
+      formattedParts,
+      formattedTotal: formatValue(total),
+      tooltipLabel: tooltipFormat(row.hour),
+      axisLabel: axisFormat(row.hour),
+    };
   });
 
   const maxTotal = buckets.reduce((max, b) => (b.total > max ? b.total : max), 0);
@@ -766,11 +783,9 @@ function HourlyBarChart({ title, unit, bucketKind = 'hour', data: rows, segments
   const barCount = Math.max(1, buckets.length);
   const slotWidth = chartWidth / barCount;
   const barInset = slotWidth * 0.15;
-  const isDaily = bucketKind === 'day';
   const unitSuffix = isDaily ? '/d' : '/h';
   const axisStride = Math.max(1, Math.ceil(barCount / 6));
-  const tooltipFormat = isDaily ? formatDay : formatHour;
-  const axisFormat = isDaily ? formatDayShort : formatHourShort;
+  const safeSegments = segments.map(({ key, label, color }) => ({ key, label, color }));
 
   return (
     <section className="panel chart-panel">
@@ -780,56 +795,17 @@ function HourlyBarChart({ title, unit, bucketKind = 'hour', data: rows, segments
           peak {formatValue(maxTotal)} <span className="chart-unit">{unit}{unitSuffix}</span>
         </span>
       </div>
-      <div className="chart-body">
-        <svg
-          viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-          preserveAspectRatio="none"
-          className="chart-svg"
-          role="img"
-          aria-label={`${title} ${isDaily ? 'daily' : 'hourly'} chart`}
-        >
-          <line x1="0" y1={chartHeight - 0.5} x2={chartWidth} y2={chartHeight - 0.5} stroke="var(--line)" strokeWidth="0.5" />
-          {buckets.map((bucket, index) => {
-            if (maxTotal <= 0) return null;
-            const x = index * slotWidth + barInset;
-            const width = slotWidth - barInset * 2;
-            let yCursor = chartHeight;
-            return (
-              <g key={String(bucket.hour) + index}>
-                <title>
-                  {`${tooltipFormat(bucket.hour)}\n` +
-                    segments
-                      .map((seg) => `${seg.label}: ${formatValue(bucket.parts[seg.key] || 0)}`)
-                      .join('\n')}
-                </title>
-                {segments.map((seg) => {
-                  const value = Number(bucket.parts[seg.key]) || 0;
-                  if (value <= 0) return null;
-                  const segHeight = (value / maxTotal) * chartHeight;
-                  yCursor -= segHeight;
-                  return (
-                    <rect
-                      key={seg.key}
-                      x={x}
-                      y={yCursor}
-                      width={width}
-                      height={segHeight}
-                      fill={seg.color}
-                    />
-                  );
-                })}
-              </g>
-            );
-          })}
-        </svg>
-        <div className="chart-axis">
-          {buckets.map((bucket, index) => (
-            <span key={String(bucket.hour) + index}>
-              {index % axisStride === 0 ? axisFormat(bucket.hour) : ''}
-            </span>
-          ))}
-        </div>
-      </div>
+      <HourlyBarChartBody
+        buckets={buckets}
+        segments={safeSegments}
+        chartHeight={chartHeight}
+        chartWidth={chartWidth}
+        slotWidth={slotWidth}
+        barInset={barInset}
+        maxTotal={maxTotal}
+        axisStride={axisStride}
+        ariaLabel={`${title} ${isDaily ? 'daily' : 'hourly'} chart`}
+      />
       <div className="chart-legend">
         {segments.map((seg) => (
           <span key={seg.key} className="chart-legend-item">

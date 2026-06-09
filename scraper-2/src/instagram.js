@@ -140,6 +140,13 @@ export async function scrapeInstagramProfile({ handle, config }) {
   return postsOnly;
 }
 
+// Apify caps the waitForFinish query param at 60 seconds, and a run can come
+// back READY (queued, not started) — so a single "start and wait" call is never
+// enough. Start the run, then poll until it reaches a terminal status.
+const APIFY_MAX_WAIT_FOR_FINISH_SECS = 60;
+const APIFY_POLL_INTERVAL_MS = 5000;
+const APIFY_TERMINAL_STATUSES = ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'];
+
 export async function runApifyActor({
   actorId,
   token,
@@ -152,7 +159,10 @@ export async function runApifyActor({
   const actorPath = actorId.replace('/', '~');
   const url = new URL(`https://api.apify.com/v2/acts/${actorPath}/runs`);
   url.searchParams.set('token', token);
-  url.searchParams.set('waitForFinish', String(waitForFinishSecs));
+  url.searchParams.set(
+    'waitForFinish',
+    String(Math.min(waitForFinishSecs, APIFY_MAX_WAIT_FOR_FINISH_SECS)),
+  );
   if (maxTotalChargeUsd !== null && maxTotalChargeUsd !== undefined) {
     url.searchParams.set('maxTotalChargeUsd', String(maxTotalChargeUsd));
   }
@@ -170,14 +180,16 @@ export async function runApifyActor({
   if (!body.data?.defaultDatasetId) {
     throw new Error(`Apify actor did not return a dataset id: ${JSON.stringify(body)}`);
   }
-  if (body.data.status && !['SUCCEEDED', 'READY', 'RUNNING'].includes(body.data.status)) {
-    throw new Error(`Apify actor finished with status ${body.data.status}`);
-  }
 
-  if (body.data.status === 'RUNNING') {
-    throw new Error(
-      `Apify actor is still running after ${waitForFinishSecs} seconds. Try again or lower the relevant result limit.`,
-    );
+  const run = await waitForApifyRunToFinish({
+    run: body.data,
+    token,
+    waitForFinishSecs,
+    label: runPurpose || actorId,
+  });
+
+  if (run.status !== 'SUCCEEDED') {
+    throw new Error(`Apify actor finished with status ${run.status}`);
   }
 
   if (runCostTracker) {
@@ -185,12 +197,33 @@ export async function runApifyActor({
       actorId,
       purpose: runPurpose || actorId,
       input,
-      run: body.data,
+      run,
       token,
     });
   }
 
-  return body.data;
+  return run;
+}
+
+async function waitForApifyRunToFinish({ run, token, waitForFinishSecs, label }) {
+  const deadline = Date.now() + waitForFinishSecs * 1000;
+  let current = run;
+
+  while (!APIFY_TERMINAL_STATUSES.includes(current.status)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Apify ${label} run ${current.id} is still ${current.status} after ${waitForFinishSecs} seconds. Try again or lower the relevant result limit.`,
+      );
+    }
+    await sleep(APIFY_POLL_INTERVAL_MS);
+    current = await fetchApifyRun({ runId: current.id, token });
+  }
+
+  return current;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function fetchApifyRun({ runId, token }) {

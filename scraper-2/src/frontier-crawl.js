@@ -556,18 +556,24 @@ async function loadOrCreatePostgresRun({
   qualificationWorkers,
 }) {
   if (runId) {
-    const fallbackState = createInitialFrontierState({ seedHandles, maxAccepted });
-    const run = await recorder.claimScraperRun({ runId, fallbackState });
+    const provisionalFallbackState = createInitialFrontierState({ seedHandles, maxAccepted });
+    const run = await recorder.claimScraperRun({ runId, fallbackState: provisionalFallbackState });
     if (!run) throw new Error(`scraper_runs row not found: ${runId}`);
     assertRunCampaignMatches({ run, campaign });
 
-    const runState = Object.keys(run.state || {}).length > 0 ? run.state : fallbackState;
+    const runSeedHandles = run.seed_handles?.length ? run.seed_handles : seedHandles;
+    const maxAcceptedForRun = run.max_accepted || maxAccepted;
+    const fallbackState = createInitialFrontierState({
+      seedHandles: runSeedHandles,
+      maxAccepted: maxAcceptedForRun,
+    });
+    const runState = hasRunnableFrontierState(run.state) ? run.state : fallbackState;
     return {
       runId: run.id,
-      maxAccepted: run.max_accepted || maxAccepted,
+      maxAccepted: maxAcceptedForRun,
       followingLimit: run.following_limit ?? followingLimit,
       qualificationWorkers: run.qualification_workers || qualificationWorkers,
-      state: normalizeFrontierState(runState, { maxAccepted: run.max_accepted || maxAccepted }),
+      state: normalizeFrontierState(runState, { maxAccepted: maxAcceptedForRun }),
     };
   }
 
@@ -581,7 +587,7 @@ async function loadOrCreatePostgresRun({
       seedHandles: runSeedHandles,
       maxAccepted: maxAcceptedForRun,
     });
-    const runState = Object.keys(run.state || {}).length > 0 ? run.state : fallbackState;
+    const runState = hasRunnableFrontierState(run.state) ? run.state : fallbackState;
     return {
       runId: run.id,
       maxAccepted: maxAcceptedForRun,
@@ -600,6 +606,15 @@ async function loadOrCreatePostgresRun({
     state,
   });
   return { runId: run.id, state, maxAccepted, followingLimit, qualificationWorkers };
+}
+
+function hasRunnableFrontierState(state) {
+  if (!state || Object.keys(state).length === 0) return false;
+  return (
+    Object.keys(state.seen || {}).length > 0 ||
+    (state.qualificationQueue || []).length > 0 ||
+    (state.frontier || []).length > 0
+  );
 }
 
 function assertRunCampaignMatches({ run, campaign }) {

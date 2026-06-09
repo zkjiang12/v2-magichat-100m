@@ -1,43 +1,4 @@
-const BUSINESS_OR_EVENT_TERMS = [
-  'agency',
-  'apparel',
-  'bar',
-  'brand',
-  'boutique',
-  'cafe',
-  'club',
-  'collective',
-  'company',
-  'conference',
-  'festival',
-  'gallery',
-  'hotel',
-  'market',
-  'media',
-  'official',
-  'organization',
-  'podcast',
-  'restaurant',
-  'shop',
-  'store',
-  'studio',
-  'team',
-  'venue',
-];
-
-const BUSINESS_CATEGORY_TERMS = [
-  'business',
-  'company',
-  'event',
-  'media',
-  'organization',
-  'product',
-  'restaurant',
-  'shopping',
-  'store',
-];
-
-export function detectHardNoAccount(candidate) {
+export function detectHardNoAccount(candidate, { accountTerms, categoryTerms }) {
   const text = [
     candidate.handle,
     candidate.name,
@@ -57,14 +18,14 @@ export function detectHardNoAccount(candidate) {
     .join(' ')
     .toLowerCase();
 
-  if (BUSINESS_CATEGORY_TERMS.some((term) => categoryText.includes(term))) {
+  if (categoryTerms.some((term) => categoryText.includes(term))) {
     return {
       hardNo: true,
       reason: `business/event category: ${categoryText}`,
     };
   }
 
-  const matchedTerm = BUSINESS_OR_EVENT_TERMS.find((term) => containsWord(text, term));
+  const matchedTerm = containsAnyTerm(text, accountTerms);
   if (matchedTerm) {
     return {
       hardNo: true,
@@ -75,7 +36,11 @@ export function detectHardNoAccount(candidate) {
   return { hardNo: false, reason: null };
 }
 
-function containsWord(text, word) {
+export function containsAnyTerm(text, terms) {
+  return terms.find((term) => containsWord(text, term)) || null;
+}
+
+export function containsWord(text, word) {
   return new RegExp(`(^|[^a-z0-9])${escapeRegExp(word)}([^a-z0-9]|$)`).test(text);
 }
 

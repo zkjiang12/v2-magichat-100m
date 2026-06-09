@@ -3,7 +3,7 @@ import { revalidatePath } from 'next/cache';
 
 import HourlyBarChartBody from './HourlyBarChartBody';
 
-import { getCampaign } from '../lib/db';
+import { CAMPAIGNS, resolveCampaign } from '../lib/campaigns';
 import {
   getCloudRunOperationStatus,
   triggerScraperCloudRunJob,
@@ -28,7 +28,7 @@ const RANGE_OPTIONS = [
 ];
 
 export default async function DashboardPage({ searchParams }) {
-  const campaign = getCampaign();
+  const campaign = resolveCampaign(searchParams?.campaign);
   const rangeParam = searchParams?.range;
   const rangeOption = RANGE_OPTIONS.find((opt) => opt.value === rangeParam) || RANGE_OPTIONS[0];
   const range = rangeOption.value;
@@ -77,7 +77,7 @@ export default async function DashboardPage({ searchParams }) {
     });
 
     try {
-      const trigger = await triggerScraperCloudRunJob({ runId: run.id });
+      const trigger = await triggerScraperCloudRunJob({ runId: run.id, campaign });
       if (trigger) {
         await recordScraperCloudTrigger({
           runId: run.id,
@@ -106,7 +106,7 @@ export default async function DashboardPage({ searchParams }) {
     });
 
     try {
-      const trigger = await triggerSenderCloudRunJob({ runId: run.id });
+      const trigger = await triggerSenderCloudRunJob({ runId: run.id, campaign });
       if (trigger) {
         await recordSenderCloudTrigger({
           runId: run.id,
@@ -138,10 +138,10 @@ export default async function DashboardPage({ searchParams }) {
   }
 
   return (
-    <Shell campaign={campaign}>
+    <Shell campaign={campaign} range={range}>
       <section className="band overview-band">
         <div className="band-header overview-header">
-          <RangeTabs current={range} />
+          <RangeTabs current={range} campaign={campaign} />
         </div>
         <div className="overview-grid">
           <Donut
@@ -261,6 +261,7 @@ export default async function DashboardPage({ searchParams }) {
           runs={data.scraperRuns}
           commandAction={commandRun}
           recentEvents={data.recentEvents}
+          campaign={campaign}
         />
         <SenderCenter
           startAction={startSenderRun}
@@ -307,7 +308,7 @@ async function cloudStatusForRun(run) {
   return getCloudRunOperationStatus({ operationName: run.cloud_operation_name });
 }
 
-function ScraperCenter({ startAction, runs, commandAction, recentEvents }) {
+function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaign }) {
   return (
     <section className="band scraper-center">
       <div className="scraper-center-section">
@@ -386,7 +387,7 @@ function ScraperCenter({ startAction, runs, commandAction, recentEvents }) {
               recentEvents.map((event) => (
                 <Link
                   className="event-row"
-                  href={`/creators/${event.handle}`}
+                  href={`/creators/${event.handle}?campaign=${campaign}`}
                   key={`${event.handle}-${event.event_type}-${event.event_at}`}
                 >
                   <span className={`status-dot ${event.event_type}`} />
@@ -741,7 +742,7 @@ function hasBeenMessaged(row) {
   return row.queue_status === 'sent' || Boolean(row.sent_at);
 }
 
-function Shell({ campaign, children }) {
+function Shell({ campaign, range = '24h', children }) {
   return (
     <>
       <header className="topbar">
@@ -749,9 +750,31 @@ function Shell({ campaign, children }) {
           <h1>MagicHat Campaign Dashboard</h1>
           <p>{campaign}</p>
         </div>
+        <CampaignTabs current={campaign} range={range} />
       </header>
       <main>{children}</main>
     </>
+  );
+}
+
+function CampaignTabs({ current, range }) {
+  return (
+    <div className="range-tabs" role="tablist" aria-label="Campaign">
+      {CAMPAIGNS.map((value) => {
+        const active = value === current;
+        const href = `/?campaign=${value}${range !== '24h' ? `&range=${range}` : ''}`;
+        return (
+          <Link
+            key={value}
+            href={href}
+            className={`range-tab${active ? ' active' : ''}`}
+            aria-current={active ? 'page' : undefined}
+          >
+            {value}
+          </Link>
+        );
+      })}
+    </div>
   );
 }
 
@@ -852,11 +875,11 @@ function formatDayShort(value) {
   return new Date(value).toLocaleString([], { month: 'short', day: 'numeric' });
 }
 
-function RangeTabs({ current }) {
+function RangeTabs({ current, campaign }) {
   return (
     <div className="range-tabs" role="tablist" aria-label="Chart range">
       {RANGE_OPTIONS.map((opt) => {
-        const href = opt.value === '24h' ? '/' : `/?range=${opt.value}`;
+        const href = `/?campaign=${campaign}${opt.value === '24h' ? '' : `&range=${opt.value}`}`;
         const active = opt.value === current;
         return (
           <Link

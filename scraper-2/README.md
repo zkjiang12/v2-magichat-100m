@@ -3,7 +3,7 @@
 This codebase has five main workflows:
 
 - `eval:accuracy`: compare your 1-4 creator scores against AI scores.
-- `eval:speed-cost`: benchmark a standard 250-profile run from `@yestheory`.
+- `eval:speed-cost`: benchmark a standard 250-profile run from the campaign's `speedCostSeed`.
 - `crawl`: run the actual frontier crawler.
 - `dashboard:legacy`: inspect old local JSON crawl/evaluation results.
 - `review`: run one-off manual handle checks.
@@ -17,12 +17,33 @@ npm install
 
 Fill in `.env` with the required API keys.
 
+## Campaigns
+
+Every workflow runs in the context of one campaign, selected with `OUTBOUND_CAMPAIGN`
+(default `day_in_life_creators`). A campaign definition in `src/campaigns/` owns the
+definition of a good creator: threshold defaults, hard-no term lists, scoring
+(`mode: 'openai'` with a system prompt, or `mode: 'rule'` with a deterministic score
+function), the accept rule, and the campaign's gold/seeds file paths.
+
+Current campaigns:
+
+- `day_in_life_creators`: large verified lifestyle creators, scored with OpenAI.
+- `ugc_creators`: 1K-50K follower UGC creators matched by bio/username terms;
+  rule-scored, no posts scrape, no OpenAI cost.
+
+Explicit `INSTAGRAM_*` env vars always override campaign defaults. To add a campaign,
+create a definition file in `src/campaigns/`, register it in `src/campaigns/index.js`,
+and add its gold file under `evals/gold/<campaign>/accuracy.json` and seeds under
+`seeds/<campaign>.txt`. Note: the always-on `worker:claim` worker only claims
+`scraper_runs` rows matching its own `OUTBOUND_CAMPAIGN`; dashboard-triggered runs
+pass the campaign automatically.
+
 ## Accuracy Eval
 
-Add handles and your scores to:
+Add handles and your scores to the active campaign's gold file:
 
 ```text
-evals/gold/accuracy.json
+evals/gold/<campaign>/accuracy.json
 ```
 
 Format:
@@ -43,7 +64,7 @@ npm run eval:accuracy
 The output puts your score next to the AI score and highlights mismatches:
 
 ```text
-data/eval-runs/accuracy/
+data/eval-runs/accuracy/<campaign>/
 ```
 
 Accuracy eval always live scrapes every handle in the gold file before scoring. It does not reuse saved scrape packets.
@@ -97,7 +118,7 @@ DATABASE_URL='postgresql://...' npm run crawl -- @seed1 @seed2
 Useful options:
 
 ```bash
-DATABASE_URL='postgresql://...' npm run crawl -- --file seeds.txt --following-limit 2000 --qualification-workers 32 --max-accepted 100
+DATABASE_URL='postgresql://...' npm run crawl -- --file seeds/day_in_life_creators.txt --following-limit 2000 --qualification-workers 32 --max-accepted 100
 ```
 
 What happens:

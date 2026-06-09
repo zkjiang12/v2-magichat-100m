@@ -69,6 +69,19 @@ export async function scrapeInstagramProfile({ handle, config }) {
     };
   }
 
+  if (config.instagramScrapePosts === false) {
+    return normalizeInstagramItems({
+      handle: normalizedHandle,
+      profileSource: profileOnly.sources.profile,
+      postsSource: null,
+      profileItems,
+      postItems: [],
+      skipped: {
+        posts: 'campaign does not use recent posts',
+      },
+    });
+  }
+
   const postsInput = {
     directUrls: [profileUrlFor(normalizedHandle)],
     resultsType: 'posts',

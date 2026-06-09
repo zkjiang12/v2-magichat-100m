@@ -9,27 +9,28 @@ import { scrapeInstagramProfile } from './instagram.js';
 import { buildScrapeHardNoReview } from './qualification.js';
 import { scoreCreator } from './scorer.js';
 
-const GOLD_PATH = 'evals/gold/accuracy.json';
-const OUTPUT_DIR = 'data/eval-runs/accuracy';
 const CONCURRENCY = 15;
 
 async function main() {
+  const config = getConfig();
+  const goldPath = config.campaignDefinition.goldFile;
+  const outputDir = path.join('data/eval-runs/accuracy', config.campaign);
+
   if (process.argv.slice(2).length > 0) {
-    throw new Error('eval:accuracy does not accept arguments; edit evals/gold/accuracy.json');
+    throw new Error(`eval:accuracy does not accept arguments; edit ${goldPath}`);
   }
 
-  const gold = await readGoldFile();
+  const gold = await readJsonFile(path.resolve(goldPath));
   const entries = validateAccuracyGold(gold);
 
   if (entries.length === 0) {
     const report = buildAccuracyReport([]);
-    const savedPath = await saveReport(report);
-    console.log(`Accuracy eval has no rows. Add handles to ${GOLD_PATH}.`);
+    const savedPath = await saveReport(report, outputDir);
+    console.log(`Accuracy eval has no rows. Add handles to ${goldPath}.`);
     console.log(`Saved: ${savedPath}`);
     return;
   }
 
-  const config = getConfig();
   const rows = await runWithConcurrency({
     items: entries,
     concurrency: CONCURRENCY,
@@ -42,7 +43,7 @@ async function main() {
   });
 
   const report = buildAccuracyReport(rows);
-  const savedPath = await saveReport(report);
+  const savedPath = await saveReport(report, outputDir);
 
   console.log('\n=== Accuracy Eval Summary ===');
   printSummary(report.summary);
@@ -84,19 +85,15 @@ async function runWithConcurrency({ items, concurrency, worker }) {
   return results;
 }
 
-async function readGoldFile() {
-  return readJsonFile(path.resolve(GOLD_PATH));
-}
-
 async function readJsonFile(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
 
-async function saveReport(report) {
-  const outputDir = path.resolve(OUTPUT_DIR);
-  await fs.mkdir(outputDir, { recursive: true });
+async function saveReport(report, outputDir) {
+  const resolvedDir = path.resolve(outputDir);
+  await fs.mkdir(resolvedDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outputPath = path.join(outputDir, `${timestamp}.json`);
+  const outputPath = path.join(resolvedDir, `${timestamp}.json`);
   await fs.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`);
   return outputPath;
 }

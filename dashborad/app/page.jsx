@@ -961,6 +961,9 @@ function Shell({ campaign, range = '24h', children }) {
           <h1>MagicHat Campaign Dashboard</h1>
           <p>{campaign}</p>
         </div>
+        <div className="range-tabs">
+          <Link href="/crm" className="range-tab">CRM</Link>
+        </div>
         <CampaignTabs current={campaign} range={range} />
       </header>
       <main>{children}</main>

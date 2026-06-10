@@ -13,6 +13,7 @@
     "add-account": "node src/add-account.js",
     "send:accounts": "node src/send-accounts.js",
     "send:accounts:run": "node src/send-accounts.js --claim-run",
+    "check-inbox": "node src/check-inbox.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

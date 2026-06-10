@@ -56,3 +56,30 @@ Fallback/admin polling is still available:
 ```bash
 npm run sender:run -- --once
 ```
+
+## Inbox checking (CRM responses)
+
+Reads each sender account's DM inbox (read-only, using the same saved sessions as
+the sender) and records replies from creators we DM'd into `dm_responses`. The
+`/crm` dashboard page is built on this table.
+
+```bash
+npm run check-inbox                          # all active/paused accounts
+npm run check-inbox -- --account some_acct   # one account (use this to test)
+npm run check-inbox -- --inbox-pages=5       # paginate deeper than the default 60 threads
+npm run check-inbox -- --debug-capture       # log every API endpoint the page calls
+```
+
+How it works: it opens `instagram.com/direct/inbox/` with the account's saved
+session, then queries Instagram's `direct_v2` inbox API through that page
+session (3 pages of 20 threads by default), keeps 1:1 threads whose
+counterpart matches a creator with a sent DM from that account, pulls those
+threads' recent history, and inserts the counterpart's messages (deduped by IG
+thread+item id, so reruns are safe). Group threads, message requests, and
+people we never DM'd are ignored.
+
+Apply the CRM migration first:
+
+```bash
+psql "$DATABASE_URL" -f sql/migrations/013_add_dm_responses_and_lead_statuses.sql
+```

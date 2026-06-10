@@ -10,3 +10,7 @@ node_modules/
 .env.*
 .dashboard-runs/
 scraper-2/data/
+sender-2/logs/
+scraper-2/logs/
+node_modules
+.claude/

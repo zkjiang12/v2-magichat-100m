@@ -49,7 +49,7 @@ export function getConfig() {
   return config;
 }
 
-function loadLocalEnv() {
+export function loadLocalEnv() {
   const envPath = path.resolve('.env');
   if (!fs.existsSync(envPath)) return;
 

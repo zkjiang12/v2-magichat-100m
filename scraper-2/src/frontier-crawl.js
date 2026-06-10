@@ -2,6 +2,7 @@
 
 import { createApifyCostTracker } from './apify-cost-tracker.js';
 import { getConfig } from './config.js';
+import { collectCreatorEmails } from './contacts.js';
 import { createDashboardRecorder } from './dashboard-db.js';
 import { scrapeFollowingCandidates } from './following.js';
 import { parseHandles } from './handles.js';
@@ -140,12 +141,28 @@ async function main() {
     });
     printProgress({ state, label: 'final' });
     console.log('Frontier crawl finished or paused.');
+    await maybeSyncToInstantly();
   } catch (error) {
     if (statsTimer) clearInterval(statsTimer);
     await markRunFailedBestEffort({ recorder: dashboardRecorder, runId, state, saveState, error });
     throw error;
   } finally {
     await dashboardRecorder.close();
+  }
+}
+
+async function maybeSyncToInstantly() {
+  if (!process.env.INSTANTLY_API_KEY) return;
+  const enabled = String(process.env.INSTANTLY_SYNC_ON_COMPLETE ?? 'true').trim().toLowerCase();
+  if (['false', '0', 'no', 'n'].includes(enabled)) return;
+  try {
+    const { runInstantlySync } = await import('./instantly-sync.js');
+    const summary = await runInstantlySync({ live: true });
+    console.log(
+      `[instantly] post-run sync: pushed=${summary.pushed} skipped=${summary.skipped} failed=${summary.failed}`,
+    );
+  } catch (error) {
+    console.error(`[instantly] post-run sync failed (crawl run unaffected): ${error.message}`);
   }
 }
 
@@ -414,7 +431,7 @@ async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, 
     const hardNoReview = buildScrapeHardNoReview({ scrapedProfile, config });
     if (hardNoReview) {
       const saved = await saveEvaluation({ handle, scrapedProfile, aiReview: hardNoReview });
-      await markScored({ state, handle, aiReview: hardNoReview, saved, config, maxAccepted });
+      await markScored({ state, handle, aiReview: hardNoReview, saved, config, maxAccepted, scrapedProfile });
       console.log(`[seed @${sourceSeed.handle}] HARD NO @${handle}: ${hardNoReview.reasoning}`);
       await saveState(state);
       return;
@@ -426,7 +443,7 @@ async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, 
     }
     const aiReview = scored.review;
     const saved = await saveEvaluation({ handle, scrapedProfile, aiReview });
-    const accepted = await markScored({ state, handle, aiReview, saved, config, maxAccepted });
+    const accepted = await markScored({ state, handle, aiReview, saved, config, maxAccepted, scrapedProfile });
 
     if (accepted) {
       addFrontierSeed({
@@ -469,12 +486,19 @@ async function saveEvaluation({ handle, scrapedProfile, aiReview }) {
   });
 }
 
-async function markScored({ state, handle, aiReview, saved, config, maxAccepted }) {
+async function markScored({ state, handle, aiReview, saved, config, maxAccepted, scrapedProfile }) {
   const record = state.seen[handle] || { handle };
   const wouldAccept = config.campaignDefinition.accept(aiReview);
   const accepted = wouldAccept && state.acceptedCount < maxAccepted;
+  const bio = scrapedProfile?.creator?.bio ?? record.bio ?? null;
+  const emails = collectCreatorEmails({
+    bio: scrapedProfile?.creator?.bio,
+    publicEmail: scrapedProfile?.creator?.publicEmail,
+  });
   state.seen[handle] = {
     ...record,
+    bio,
+    emails: emails.length > 0 ? emails : record.emails || [],
     status: accepted ? 'accepted' : 'rejected',
     scoredAt: new Date().toISOString(),
     fitScore: aiReview.fitScore,

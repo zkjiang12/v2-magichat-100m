@@ -324,6 +324,11 @@ function normalizeInstagramItems({
       profileCandidate.external_url ||
       profileCandidate.website ||
       null,
+    publicEmail:
+      profileCandidate.publicEmail ||
+      profileCandidate.businessEmail ||
+      profileCandidate.public_email ||
+      null,
     businessCategoryName:
       profileCandidate.businessCategoryName ||
       profileCandidate.businessCategory ||
@@ -348,6 +353,7 @@ function normalizeInstagramItems({
     creator: {
       name: profile.fullName,
       bio: profile.biography,
+      publicEmail: profile.publicEmail,
       followersCount: profile.followersCount,
       followingCount: profile.followsCount,
       averageEngagementRate: averageEngagement.averageEngagementRate,

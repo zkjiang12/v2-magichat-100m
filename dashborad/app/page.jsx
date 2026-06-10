@@ -323,6 +323,7 @@ export default async function DashboardPage({ searchParams }) {
         updateAction={updateSenderAccount}
       />
 
+      {data.instantlyTotals ? <InstantlyPanel totals={data.instantlyTotals} /> : null}
       <CreatorKanbanBoard rows={data.acceptedCreators} />
       <EvalInstructions />
     </Shell>
@@ -825,6 +826,29 @@ function CloudRunDetails({ run }) {
         run.cloud_trigger_error ? `trigger error ${run.cloud_trigger_error}` : null,
       ].filter(Boolean).join(' | ')}
     </small>
+  );
+}
+
+function InstantlyPanel({ totals }) {
+  const qualified = Number(totals.qualified || 0);
+  const withEmail = Number(totals.with_email || 0);
+  return (
+    <Panel title="Email Outreach (Instantly)">
+      <p className="muted-copy">
+        Qualified creators (fit 3-4) with an email are pushed to Instantly campaigns after each
+        scraper run. Instantly handles the actual sending.
+      </p>
+      <StatRows
+        rows={[
+          ['Qualified creators', qualified],
+          ['With email', `${formatNumber(withEmail)} (${percent(withEmail, qualified)})`],
+          ['Leads pushed', Number(totals.pushed || 0)],
+          ['Duplicates skipped', Number(totals.skipped || 0)],
+          ['Push failures', Number(totals.failed || 0)],
+          ['Last push', totals.last_pushed_at ? relativeTime(totals.last_pushed_at) : 'never'],
+        ]}
+      />
+    </Panel>
   );
 }
 

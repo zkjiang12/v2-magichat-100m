@@ -20,6 +20,7 @@ export async function getDashboardData({ campaign, range = '24h' }) {
   const runObservability = await queryRunObservability(campaign);
   const acceptedCreators = await queryCreators(campaign);
   const recentEvents = await queryRecentEvents(campaign);
+  const instantlyTotals = await queryInstantlyTotals(campaign);
 
   return {
     scrapeTotals,
@@ -40,6 +41,7 @@ export async function getDashboardData({ campaign, range = '24h' }) {
     runObservability,
     acceptedCreators,
     recentEvents,
+    instantlyTotals,
   };
 }
 
@@ -927,6 +929,39 @@ async function queryCreators(campaign) {
     [campaign],
   );
   return result.rows;
+}
+
+async function queryInstantlyTotals(campaign) {
+  try {
+    const result = await query(
+      `
+        select
+          (
+            select count(distinct c.id)::int
+            from creator_evaluations ce
+            join creators c on c.id = ce.creator_id
+            where ce.campaign = $1 and ce.fit_score >= 3
+          ) as qualified,
+          (
+            select count(distinct c.id)::int
+            from creator_evaluations ce
+            join creators c on c.id = ce.creator_id
+            where ce.campaign = $1
+              and ce.fit_score >= 3
+              and coalesce(array_length(c.emails, 1), 0) > 0
+          ) as with_email,
+          (select count(*)::int from instantly_sync where campaign = $1 and status = 'pushed') as pushed,
+          (select count(*)::int from instantly_sync where campaign = $1 and status = 'skipped') as skipped,
+          (select count(*)::int from instantly_sync where campaign = $1 and status = 'failed') as failed,
+          (select max(pushed_at) from instantly_sync where campaign = $1) as last_pushed_at
+      `,
+      [campaign],
+    );
+    return result.rows[0] || null;
+  } catch {
+    // instantly_sync migration not applied yet; hide the panel instead of breaking the page.
+    return null;
+  }
 }
 
 async function queryRecentEvents(campaign) {

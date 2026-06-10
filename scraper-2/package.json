@@ -8,6 +8,8 @@
     "eval:speed-cost": "node src/eval-speed-cost.js",
     "crawl": "node src/frontier-crawl.js",
     "worker:claim": "node src/frontier-crawl.js --claim-next",
+    "backfill:emails": "node src/backfill-emails.js",
+    "instantly:sync": "node src/instantly-sync.js",
     "dashboard:legacy": "node src/dashboard.js",
     "review": "node src/cli.js",
     "test": "node --test tests/*.test.js"

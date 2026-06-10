@@ -303,9 +303,11 @@ async function upsertCreator(pool, record) {
         is_verified,
         source_seed,
         discovered_at,
+        bio,
+        emails,
         updated_at
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
       on conflict (handle)
       do update set
         profile_url = coalesce(excluded.profile_url, creators.profile_url),
@@ -316,6 +318,11 @@ async function upsertCreator(pool, record) {
         is_verified = coalesce(excluded.is_verified, creators.is_verified),
         source_seed = coalesce(excluded.source_seed, creators.source_seed),
         discovered_at = coalesce(creators.discovered_at, excluded.discovered_at),
+        bio = coalesce(excluded.bio, creators.bio),
+        emails = case
+          when coalesce(array_length(excluded.emails, 1), 0) > 0 then excluded.emails
+          else creators.emails
+        end,
         updated_at = now()
       returning *
     `,
@@ -329,6 +336,8 @@ async function upsertCreator(pool, record) {
       booleanOrNull(record.isVerified),
       record.sourceSeed || null,
       timestampOrNull(record.discoveredAt),
+      record.bio || null,
+      Array.isArray(record.emails) ? record.emails : [],
     ],
   );
   return result.rows[0];

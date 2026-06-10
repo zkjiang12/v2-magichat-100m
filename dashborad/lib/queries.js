@@ -958,8 +958,10 @@ async function queryInstantlyTotals(campaign) {
       [campaign],
     );
     return result.rows[0] || null;
-  } catch {
-    // instantly_sync migration not applied yet; hide the panel instead of breaking the page.
+  } catch (error) {
+    // instantly_sync migration not applied yet (or query failed); hide the
+    // panel instead of breaking the page, but leave a trace in server logs.
+    console.warn(`[dashboard] instantly totals unavailable: ${error.message}`);
     return null;
   }
 }

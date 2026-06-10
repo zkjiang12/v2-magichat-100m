@@ -26,6 +26,7 @@ create table if not exists instantly_sync (
   instantly_campaign_id text not null,
   instantly_lead_id text,
   status text not null check (status in ('pushed', 'skipped', 'failed')),
+  attempts integer not null default 1,
   error text,
   pushed_at timestamptz,
   created_at timestamptz not null default now(),

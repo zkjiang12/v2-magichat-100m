@@ -319,10 +319,10 @@ async function upsertCreator(pool, record) {
         source_seed = coalesce(excluded.source_seed, creators.source_seed),
         discovered_at = coalesce(creators.discovered_at, excluded.discovered_at),
         bio = coalesce(excluded.bio, creators.bio),
-        emails = case
-          when coalesce(array_length(excluded.emails, 1), 0) > 0 then excluded.emails
-          else creators.emails
-        end,
+        emails = (
+          select coalesce(array_agg(distinct e), '{}'::text[])
+          from unnest(creators.emails || excluded.emails) as t(e)
+        ),
         updated_at = now()
       returning *
     `,

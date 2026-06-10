@@ -100,6 +100,7 @@ export async function rescrapeMissingProfiles({
 
   let scraped = 0;
   let foundEmail = 0;
+  let missing = 0;
   for (let start = 0; start < candidates.rows.length; start += batchSize) {
     const batch = candidates.rows.slice(start, start + batchSize);
     const usernames = batch.map((row) => row.handle);
@@ -127,8 +128,13 @@ export async function rescrapeMissingProfiles({
 
     for (const row of batch) {
       const item = itemsByUsername.get(row.handle.toLowerCase());
-      const bio = item?.biography || item?.bio || null;
-      const publicEmail = item?.publicEmail || item?.businessEmail || item?.public_email || null;
+      if (!item) {
+        // Leave contact_scraped_at null so a future run can retry this handle.
+        missing += 1;
+        continue;
+      }
+      const bio = item.biography || item.bio || null;
+      const publicEmail = item.publicEmail || item.businessEmail || item.public_email || null;
       const emails = collectCreatorEmails({ bio, publicEmail });
       await pool.query(
         `
@@ -149,11 +155,14 @@ export async function rescrapeMissingProfiles({
     }
 
     log(
-      `[backfill] batch ${Math.floor(start / batchSize) + 1}: scraped ${scraped}/${candidates.rows.length}, emails found so far: ${foundEmail}`,
+      `[backfill] batch ${Math.floor(start / batchSize) + 1}: scraped ${scraped}/${candidates.rows.length}, emails found so far: ${foundEmail}, not returned by Apify: ${missing}`,
     );
   }
 
-  return { candidates: candidates.rows.length, scraped, foundEmail };
+  if (missing > 0) {
+    log(`[backfill] ${missing} handles were not returned by Apify and stay eligible for a retry.`);
+  }
+  return { candidates: candidates.rows.length, scraped, foundEmail, missing };
 }
 
 export async function reportEmailCoverage({ pool, minFitScore, log = console.log }) {
@@ -192,19 +201,24 @@ async function main() {
   const dataDir = dataDirIndex !== -1 ? args[dataDirIndex + 1] : path.resolve('data/evaluations');
   const rescrapeLimitIndex = args.indexOf('--rescrape-limit');
   const rescrapeLimit = rescrapeLimitIndex !== -1 ? Number(args[rescrapeLimitIndex + 1]) : null;
-  const minFitScore = Number(process.env.INSTANTLY_MIN_FIT_SCORE || DEFAULT_MIN_FIT_SCORE);
+  const minFitScoreRaw = process.env.INSTANTLY_MIN_FIT_SCORE;
+  const minFitScore =
+    minFitScoreRaw === undefined || minFitScoreRaw === '' ? DEFAULT_MIN_FIT_SCORE : Number(minFitScoreRaw);
 
-  if (rescrapeLimit !== null && (!Number.isFinite(rescrapeLimit) || rescrapeLimit < 1)) {
-    throw new Error('--rescrape-limit must be a positive number');
+  if (rescrapeLimit !== null && (!Number.isInteger(rescrapeLimit) || rescrapeLimit < 1)) {
+    throw new Error('--rescrape-limit must be a positive integer');
   }
 
-  const config = getConfig();
-  if (!config.databaseUrl) throw new Error('DATABASE_URL is required.');
+  // getConfig() validates Apify/OpenAI keys, which only the rescrape phase needs;
+  // phase 1 and --report-only run with just DATABASE_URL.
+  const config = rescrape ? getConfig() : null;
+  const databaseUrl = config?.databaseUrl || process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error('DATABASE_URL is required.');
 
   const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
+    connectionString: databaseUrl,
     max: 3,
-    ssl: /localhost|127\.0\.0\.1/.test(config.databaseUrl) ? false : { rejectUnauthorized: false },
+    ssl: /localhost|127\.0\.0\.1/.test(databaseUrl) ? false : { rejectUnauthorized: false },
   });
 
   try {

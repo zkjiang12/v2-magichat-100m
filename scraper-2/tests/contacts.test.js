@@ -65,3 +65,18 @@ test('normalizeEmail rejects junk and over-long values', () => {
   assert.equal(normalizeEmail(`${'a'.repeat(300)}@b.com`), null);
   assert.equal(normalizeEmail('  Foo@Bar.com  '), 'foo@bar.com');
 });
+
+test('normalizeEmail rejects structurally invalid shapes', () => {
+  assert.equal(normalizeEmail('foo.@bar.com'), null);
+  assert.equal(normalizeEmail('fo..o@bar.com'), null);
+  assert.equal(normalizeEmail('a@b..com'), null);
+  assert.equal(normalizeEmail('x@-bad.com'), null);
+  assert.equal(normalizeEmail('x@bad-.com'), null);
+});
+
+test('ignores cross-platform mentions like insta@handle', () => {
+  assert.deepEqual(extractEmailsFromText('YT/insta@first.last for collabs'), []);
+  assert.deepEqual(extractEmailsFromText('tiktok@my.handle and yt@some.name'), []);
+  // but a real email whose local part merely contains a platform word still passes
+  assert.deepEqual(extractEmailsFromText('instagram.team@gmail.com'), ['instagram.team@gmail.com']);
+});

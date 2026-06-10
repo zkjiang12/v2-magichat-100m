@@ -141,7 +141,7 @@ async function main() {
     });
     printProgress({ state, label: 'final' });
     console.log('Frontier crawl finished or paused.');
-    await maybeSyncToInstantly();
+    await maybeSyncToInstantly({ campaign: config.campaign });
   } catch (error) {
     if (statsTimer) clearInterval(statsTimer);
     await markRunFailedBestEffort({ recorder: dashboardRecorder, runId, state, saveState, error });
@@ -151,13 +151,17 @@ async function main() {
   }
 }
 
-async function maybeSyncToInstantly() {
+// Explicit opt-in: INSTANTLY_SYNC_ON_COMPLETE=true. Only fires for fully
+// completed runs (not pauses/stops) and only for this run's campaign, so
+// setting INSTANTLY_API_KEY for manual syncs can't trigger surprise pushes.
+async function maybeSyncToInstantly({ campaign }) {
   if (!process.env.INSTANTLY_API_KEY) return;
-  const enabled = String(process.env.INSTANTLY_SYNC_ON_COMPLETE ?? 'true').trim().toLowerCase();
-  if (['false', '0', 'no', 'n'].includes(enabled)) return;
+  if (stopRequested) return;
+  const enabled = String(process.env.INSTANTLY_SYNC_ON_COMPLETE ?? '').trim().toLowerCase();
+  if (!['true', '1', 'yes', 'y'].includes(enabled)) return;
   try {
     const { runInstantlySync } = await import('./instantly-sync.js');
-    const summary = await runInstantlySync({ live: true });
+    const summary = await runInstantlySync({ live: true, campaign });
     console.log(
       `[instantly] post-run sync: pushed=${summary.pushed} skipped=${summary.skipped} failed=${summary.failed}`,
     );

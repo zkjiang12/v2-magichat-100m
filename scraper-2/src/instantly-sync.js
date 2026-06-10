@@ -10,6 +10,7 @@ import { createInstantlyClient, isDuplicateLeadError } from './instantly.js';
 
 const DEFAULT_MIN_FIT_SCORE = 3;
 const LEAD_PUSH_DELAY_MS = 150;
+const MAX_PUSH_ATTEMPTS = 3;
 
 export function instantlyCampaignEnvKey(campaign) {
   return `INSTANTLY_CAMPAIGN_ID_${campaign.toUpperCase()}`;
@@ -36,11 +37,13 @@ export async function runInstantlySync({
   log = console.log,
 } = {}) {
   const apiKey = process.env.INSTANTLY_API_KEY;
-  if (!apiKey) throw new Error('INSTANTLY_API_KEY is required.');
+  if (live && !apiKey) throw new Error('INSTANTLY_API_KEY is required for --live.');
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required.');
 
-  const minFitScore = Number(process.env.INSTANTLY_MIN_FIT_SCORE || DEFAULT_MIN_FIT_SCORE);
+  const minFitScoreRaw = process.env.INSTANTLY_MIN_FIT_SCORE;
+  const minFitScore =
+    minFitScoreRaw === undefined || minFitScoreRaw === '' ? DEFAULT_MIN_FIT_SCORE : Number(minFitScoreRaw);
   if (!Number.isFinite(minFitScore)) throw new Error('INSTANTLY_MIN_FIT_SCORE must be a number.');
 
   const { mapping, unmapped } = resolveCampaignMapping();
@@ -63,6 +66,14 @@ export async function runInstantlySync({
   });
 
   try {
+    // Excludes leads already pushed/skipped, and failed leads that exhausted
+    // their retry budget (so a permanently-bad email can't starve the queue).
+    const params = [minFitScore, mappedCampaigns, MAX_PUSH_ATTEMPTS];
+    let limitClause = '';
+    if (limit) {
+      params.push(limit);
+      limitClause = `limit $${params.length}`;
+    }
     const pending = await pool.query(
       `
         select
@@ -85,12 +96,12 @@ export async function runInstantlySync({
             where s.creator_id = c.id
               and s.campaign = ce.campaign
               and s.email = e.email
-              and s.status in ('pushed', 'skipped')
+              and (s.status in ('pushed', 'skipped') or s.attempts >= $3)
           )
         order by ce.fit_score desc, c.followers_count desc nulls last
-        ${limit ? 'limit $3' : ''}
+        ${limitClause}
       `,
-      limit ? [minFitScore, mappedCampaigns, limit] : [minFitScore, mappedCampaigns],
+      params,
     );
 
     const summary = {
@@ -157,6 +168,11 @@ async function pushLead({ client, pool, row, instantlyCampaignId, log }) {
       },
     });
     leadId = lead?.id || null;
+    if (!leadId) {
+      // skip_if_in_campaign matches return 200 without a lead id.
+      status = 'skipped';
+      errorMessage = 'no lead id in response (already in campaign)';
+    }
   } catch (error) {
     if (isDuplicateLeadError(error)) {
       status = 'skipped';
@@ -179,6 +195,7 @@ async function pushLead({ client, pool, row, instantlyCampaignId, log }) {
         instantly_campaign_id = excluded.instantly_campaign_id,
         instantly_lead_id = excluded.instantly_lead_id,
         status = excluded.status,
+        attempts = instantly_sync.attempts + 1,
         error = excluded.error,
         pushed_at = coalesce(excluded.pushed_at, instantly_sync.pushed_at),
         updated_at = now()
@@ -202,16 +219,26 @@ function sleep(ms) {
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
+function flagValue(args, name) {
+  const index = args.indexOf(name);
+  if (index === -1) return null;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`${name} requires a value`);
+    process.exit(1);
+  }
+  return value;
+}
+
 if (isMain) {
   const args = process.argv.slice(2);
   const live = args.includes('--live');
-  const limitIndex = args.indexOf('--limit');
-  const limit = limitIndex !== -1 ? Number(args[limitIndex + 1]) : null;
-  const campaignIndex = args.indexOf('--campaign');
-  const campaign = campaignIndex !== -1 ? args[campaignIndex + 1] : null;
+  const limitRaw = flagValue(args, '--limit');
+  const limit = limitRaw === null ? null : Number(limitRaw);
+  const campaign = flagValue(args, '--campaign');
 
-  if (limit !== null && (!Number.isFinite(limit) || limit < 1)) {
-    console.error('--limit must be a positive number');
+  if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+    console.error('--limit must be a positive integer');
     process.exit(1);
   }
 

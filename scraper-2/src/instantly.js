@@ -25,6 +25,7 @@ export function createInstantlyClient({ apiKey, fetchImpl = fetch }) {
   return {
     async listCampaigns() {
       const campaigns = [];
+      const seenCursors = new Set();
       let startingAfter = null;
       do {
         const query = new URLSearchParams({ limit: '100' });
@@ -35,6 +36,8 @@ export function createInstantlyClient({ apiKey, fetchImpl = fetch }) {
         });
         campaigns.push(...(page.items || []));
         startingAfter = page.next_starting_after || null;
+        if (startingAfter && seenCursors.has(startingAfter)) break;
+        if (startingAfter) seenCursors.add(startingAfter);
       } while (startingAfter);
       return campaigns;
     },

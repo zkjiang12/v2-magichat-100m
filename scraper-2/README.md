@@ -286,3 +286,44 @@ The scraper uses:
 - OpenAI only after deterministic hard-no filters pass.
 
 Top-comment scraping is not part of the pipeline.
+
+## Email capture + Instantly.ai sync
+
+Every scraped profile now captures contact emails from two sources: the bio text
+(regex extraction) and Instagram's business-contact email (Apify `publicEmail`).
+Emails land on `creators.emails`; qualified leads (`fit_score >= 3`, configurable
+via `INSTANTLY_MIN_FIT_SCORE`) are pushed to Instantly.ai campaigns, one lead per
+(creator, campaign, email). Email copy lives in Instantly; we send `username`,
+`name`, `follower_count`, `fit_score`, `bio`, `profile_url`, and `source_campaign`
+as custom variables. Duplicates are blocked by the `instantly_sync` table plus
+`skip_if_in_campaign` (a creator CAN be in both campaigns intentionally).
+
+Setup (one-time):
+
+1. Apply `sender-2/sql/migrations/010_add_creator_contacts_and_instantly_sync.sql`.
+2. Create the two campaigns in Instantly with their email sequences, then set
+   `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID_UGC_CREATORS`, and
+   `INSTANTLY_CAMPAIGN_ID_DAY_IN_LIFE_CREATORS` in `.env`.
+
+Commands (run from `scraper-2/`, which has `.env` and `data/`):
+
+```bash
+# Backfill emails from local evaluation files, then print coverage per campaign.
+npm run backfill:emails
+
+# Also re-scrape qualified creators that still have no email (costs Apify $):
+npm run backfill:emails -- --rescrape            # add --rescrape-limit 100 to cap
+
+# Preview what would be pushed to Instantly (no writes, no API calls):
+npm run instantly:sync
+
+# Push a small test batch, then check the leads inside Instantly:
+npm run instantly:sync -- --live --limit 20
+
+# Push everything pending:
+npm run instantly:sync -- --live
+```
+
+Continuous operation: set `INSTANTLY_SYNC_ON_COMPLETE=true` and every *completed*
+crawl run pushes its campaign's new leads automatically (pauses/stops don't).
+Failed pushes are retried on later runs, max 3 attempts per lead.

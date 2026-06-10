@@ -113,6 +113,7 @@ async function runSenderRun({ pool, config, run, accounts, args }) {
     ...args,
     maxPerAccount: accountMaxPerAccount,
     senderRunId: run.id,
+    senderRun: run,
     runMaxSends: maxSends,
   };
 
@@ -207,6 +208,7 @@ async function runAccount({ pool, config, account, args }) {
         config,
         senderAccount,
         senderRunId: args.senderRunId || null,
+        senderRun: args.senderRun || null,
       });
 
       sentOrAttempted += 1;

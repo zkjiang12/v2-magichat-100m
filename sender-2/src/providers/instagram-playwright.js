@@ -2,7 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-import { loadAccountConfigs, selectSenderAccount } from '../accounts.js';
+import {
+  findAccountConfig,
+  loadAccountConfigs,
+  mergeAccountConfig,
+  selectSenderAccount,
+} from '../accounts.js';
 
 export function createInstagramPlaywrightProvider({ pool, config }) {
   if (!pool) throw new Error('Instagram Playwright provider requires a database pool.');
@@ -33,15 +38,24 @@ class InstagramPlaywrightProvider {
     this.lastScreenshot = null;
   }
 
-  async sendMessage({ creator, message, senderRun = null }) {
-    const account = await selectSenderAccount(this.pool, {
-      allowedUsernames: senderRun?.account_usernames || [],
-      excludedUsernames: this.config.excludedSenderUsernames,
-      accountConfigs: this.accountConfigs,
-    });
+  async sendMessage({ account: providedAccount = null, creator, message, senderRun = null }) {
+    // A lane passes its locked account row; legacy callers let us pick.
+    const account = providedAccount
+      ? mergeAccountConfig(
+        providedAccount,
+        findAccountConfig(this.accountConfigs, providedAccount.username),
+      )
+      : await selectSenderAccount(this.pool, {
+        allowedUsernames: senderRun?.account_usernames || [],
+        excludedUsernames: this.config.excludedSenderUsernames,
+        accountConfigs: this.accountConfigs,
+        campaign: senderRun?.campaign || this.config.campaign,
+      });
 
     if (!account) {
-      throw new Error('No eligible sender account is under its daily limit.');
+      const error = new Error('No eligible sender account is under its daily limit.');
+      error.code = 'NO_CAPACITY';
+      throw error;
     }
 
     if (!account.storageState) {
@@ -102,6 +116,7 @@ class InstagramPlaywrightProvider {
     this.sessions.clear();
     await this.browser?.close().catch(() => {});
     this.browser = null;
+    this.browserPromise = null;
   }
 
   async getSession(account) {
@@ -109,12 +124,15 @@ class InstagramPlaywrightProvider {
     const existing = this.sessions.get(key);
     if (existing) return existing;
 
-    if (!this.browser) {
-      this.browser = await chromium.launch({
+    // Cache the launch promise so concurrent lanes share one browser
+    // instead of racing to launch their own.
+    if (!this.browserPromise) {
+      this.browserPromise = chromium.launch({
         headless: this.config.playwrightHeadless,
         slowMo: this.config.playwrightSlowMoMs,
       });
     }
+    this.browser = await this.browserPromise;
 
     const context = await this.browser.newContext({ storageState: account.storageState });
     const page = await context.newPage();

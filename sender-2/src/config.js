@@ -21,6 +21,9 @@ export function getConfig() {
     playwrightSlowMoMs: numberEnv('SENDER_PLAYWRIGHT_SLOW_MO_MS', 0),
     sendMinDelayMs: numberEnv('SENDER_SEND_MIN_DELAY_MS', 45_000),
     sendMaxDelayMs: numberEnv('SENDER_SEND_MAX_DELAY_MS', 120_000),
+    maxParallelAccounts: numberEnv('SENDER_MAX_PARALLEL_ACCOUNTS', 3),
+    drainJitterMs: numberEnv('SENDER_DRAIN_JITTER_MS', 0),
+    reclaimAfterMinutes: numberEnv('SENDER_RECLAIM_AFTER_MINUTES', 20),
     screenshotDir: process.env.SENDER_SCREENSHOT_DIR || 'logs/screenshots',
     campaign: process.env.OUTBOUND_CAMPAIGN || 'day_in_life_creators',
     messageTemplate:
@@ -40,6 +43,12 @@ export function getConfig() {
   if (config.sendMinDelayMs < 0) missing.push('SENDER_SEND_MIN_DELAY_MS must be >= 0');
   if (config.sendMaxDelayMs < config.sendMinDelayMs) {
     missing.push('SENDER_SEND_MAX_DELAY_MS must be >= SENDER_SEND_MIN_DELAY_MS');
+  }
+  if (config.maxParallelAccounts < 1) {
+    missing.push('SENDER_MAX_PARALLEL_ACCOUNTS must be >= 1');
+  }
+  if (config.reclaimAfterMinutes < 5) {
+    missing.push('SENDER_RECLAIM_AFTER_MINUTES must be >= 5');
   }
 
   if (missing.length > 0) {

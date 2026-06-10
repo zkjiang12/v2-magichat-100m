@@ -22,7 +22,7 @@ test('selectSenderAccount excludes blocked accounts and respects allowed usernam
   const pool = {
     async query(sql, params) {
       assert.match(sql, /username <> all/);
-      assert.deepEqual(params, [['try_magic_hat'], ['zikang_jiang']]);
+      assert.deepEqual(params, [['try_magic_hat'], ['zikang_jiang'], null]);
       return {
         rows: [{
           id: 'account-1',
@@ -44,6 +44,32 @@ test('selectSenderAccount excludes blocked accounts and respects allowed usernam
   assert.equal(account.id, 'account-1');
   assert.equal(account.username, 'zikang_jiang');
   assert.equal(account.storageState, '/tmp/account-1.json');
+});
+
+test('selectSenderAccount filters and prefers accounts by campaign', async () => {
+  const pool = {
+    async query(sql, params) {
+      assert.match(sql, /campaign is null or campaign = \$3::text/);
+      assert.match(sql, /case when \$3::text is not null and campaign = \$3::text then 0 else 1 end asc/);
+      assert.deepEqual(params, [['try_magic_hat'], [], 'ugc_creators']);
+      return {
+        rows: [{
+          id: 'account-2',
+          username: 'ugc_burner',
+          campaign: 'ugc_creators',
+          daily_send_limit: 25,
+          sends_today: 0,
+          effective_sends_today: 0,
+          metadata: {},
+        }],
+      };
+    },
+  };
+
+  const account = await selectSenderAccount(pool, { campaign: 'ugc_creators' });
+
+  assert.equal(account.username, 'ugc_burner');
+  assert.equal(account.campaign, 'ugc_creators');
 });
 
 test('loadAccountConfigs resolves storageState relative to config file', () => {

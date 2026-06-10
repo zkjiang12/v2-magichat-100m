@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 
 import { resolveCampaign } from '../../../lib/campaigns';
-import { getCreatorDetail, saveCreatorNote } from '../../../lib/queries';
+import { getCreatorDetail, requeueCreatorSend, saveCreatorNote } from '../../../lib/queries';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +25,15 @@ export default async function CreatorDetailPage({ params, searchParams }) {
     revalidatePath(`/creators/${handle}`);
     revalidatePath('/');
   }
+
+  async function requeueSend() {
+    'use server';
+    await requeueCreatorSend({ handle, campaign });
+    revalidatePath(`/creators/${handle}`);
+    revalidatePath('/');
+  }
+
+  const canRequeue = ['failed_retryable', 'failed_final', 'skipped', 'dry_run'].includes(creator.queue_status);
 
   return (
     <>
@@ -60,6 +69,13 @@ export default async function CreatorDetailPage({ params, searchParams }) {
               <textarea name="note" defaultValue={creator.note || ''} />
               <button type="submit">Save note</button>
             </form>
+            {canRequeue ? (
+              <form action={requeueSend} className="run-form">
+                <button type="submit" className="secondary-button">
+                  Requeue DM (currently {creator.queue_status})
+                </button>
+              </form>
+            ) : null}
           </section>
         </section>
 

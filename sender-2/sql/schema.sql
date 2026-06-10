@@ -31,14 +31,24 @@ create table if not exists creator_evaluations (
   unique (creator_id, campaign)
 );
 
+create table if not exists campaigns (
+  name text primary key,
+  message_template text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists sender_accounts (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
   status text not null default 'active' check (status in ('active', 'paused', 'blocked')),
+  campaign text,
   daily_send_limit integer not null default 25,
   sends_today integer not null default 0,
   last_sent_at timestamptz,
   cooldown_until timestamptz,
+  locked_by text,
+  locked_at timestamptz,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -58,6 +68,8 @@ create table if not exists send_queue (
   claimed_at timestamptz,
   retry_after timestamptz,
   sender_account_id uuid references sender_accounts(id),
+  recipient_handle text,
+  sender_handle text,
   last_error text,
   message text,
   queued_at timestamptz not null default now(),
@@ -139,6 +151,10 @@ create table if not exists scraper_runs (
   counters jsonb not null default '{}'::jsonb,
   error text,
   requested_by text,
+  worker_target text,
+  cloud_operation_name text,
+  cloud_triggered_at timestamptz,
+  cloud_trigger_error text,
   started_at timestamptz,
   completed_at timestamptz,
   created_at timestamptz not null default now(),
@@ -153,10 +169,16 @@ create table if not exists sender_runs (
   ),
   account_usernames text[] not null default '{}'::text[],
   max_sends integer,
+  message_template text,
   config jsonb not null default '{}'::jsonb,
   counters jsonb not null default '{}'::jsonb,
   error text,
+  pause_reason text,
   requested_by text,
+  worker_target text,
+  cloud_operation_name text,
+  cloud_triggered_at timestamptz,
+  cloud_trigger_error text,
   started_at timestamptz,
   completed_at timestamptz,
   created_at timestamptz not null default now(),
@@ -203,6 +225,7 @@ create index if not exists run_commands_pending_idx
 create index if not exists send_attempts_sender_run_id_idx
   on send_attempts (sender_run_id, created_at);
 
+alter table campaigns enable row level security;
 alter table creators enable row level security;
 alter table creator_evaluations enable row level security;
 alter table sender_accounts enable row level security;

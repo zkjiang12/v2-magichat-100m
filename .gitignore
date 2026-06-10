@@ -1,4 +1,5 @@
 .dashboard-runs/
+.claude/
 
 .DS_Store
 .git.broken-*/

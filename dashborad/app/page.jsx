@@ -16,6 +16,9 @@ import {
   getDashboardData,
   recordScraperCloudTrigger,
   recordSenderCloudTrigger,
+  requeueCampaignFailures,
+  requeueRunFailures,
+  updateSenderAccountSettings,
 } from '../lib/queries';
 
 export const dynamic = 'force-dynamic';
@@ -99,10 +102,17 @@ export default async function DashboardPage({ searchParams }) {
 
   async function startSenderRun(formData) {
     'use server';
+    const accountUsernames = [...new Set(
+      formData.getAll('accountUsernames')
+        .map((value) => String(value).trim().replace(/^@/, '').toLowerCase())
+        .filter(Boolean),
+    )];
+    const messageTemplate = String(formData.get('messageTemplate') || '').trim();
     const run = await createSenderRun({
       campaign,
-      accountUsernames: parseHandles(String(formData.get('accountUsernames') || '')),
+      accountUsernames,
       maxSends: boundedPositiveInt(formData.get('maxSends'), 25, 100),
+      messageTemplate: messageTemplate || null,
     });
 
     try {
@@ -126,6 +136,22 @@ export default async function DashboardPage({ searchParams }) {
     revalidatePath('/');
   }
 
+  async function updateSenderAccount(formData) {
+    'use server';
+    const username = String(formData.get('username') || '').trim();
+    if (!username) return;
+    const selectedCampaign = String(formData.get('campaign') || '');
+    const selectedStatus = String(formData.get('status') || '');
+    const limitValue = Number.parseInt(String(formData.get('dailySendLimit') || ''), 10);
+    await updateSenderAccountSettings({
+      username,
+      status: ['active', 'paused', 'blocked'].includes(selectedStatus) ? selectedStatus : null,
+      campaign: CAMPAIGNS.includes(selectedCampaign) ? selectedCampaign : null,
+      dailySendLimit: Number.isFinite(limitValue) && limitValue >= 0 ? Math.min(limitValue, 500) : null,
+    });
+    revalidatePath('/');
+  }
+
   async function commandRun(formData) {
     'use server';
     await createRunCommand({
@@ -134,6 +160,21 @@ export default async function DashboardPage({ searchParams }) {
       runId: String(formData.get('runId')),
       command: String(formData.get('command')),
     });
+    revalidatePath('/');
+  }
+
+  async function retryRunFailures(formData) {
+    'use server';
+    await requeueRunFailures({
+      runId: String(formData.get('runId') || ''),
+      campaign,
+    });
+    revalidatePath('/');
+  }
+
+  async function requeueAllFailures() {
+    'use server';
+    await requeueCampaignFailures({ campaign });
     revalidatePath('/');
   }
 
@@ -267,8 +308,20 @@ export default async function DashboardPage({ searchParams }) {
           startAction={startSenderRun}
           runs={data.senderRuns}
           commandAction={commandRun}
+          retryAction={retryRunFailures}
+          requeueAllAction={requeueAllFailures}
+          queueTotals={data.sendQueueTotals}
+          accounts={data.senderAccounts}
+          campaign={campaign}
+          campaignSettings={data.campaignSettings}
         />
       </div>
+
+      <SenderAccountsPanel
+        accounts={data.senderAccounts}
+        campaign={campaign}
+        updateAction={updateSenderAccount}
+      />
 
       <CreatorKanbanBoard rows={data.acceptedCreators} />
       <EvalInstructions />
@@ -315,18 +368,25 @@ function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaig
       <div className="scraper-center-section">
         <h3>Start Scraper Run</h3>
         <form action={startAction} className="run-form">
-          {[
-            ['seedHandles', 'Seed handles', 'yestheory, drewbinsky'],
-            ['maxAccepted', 'Max accepted', '1000'],
-            ['followingLimit', 'Following limit', '2000'],
-            ['qualificationWorkers', 'Workers', '32'],
-          ].map(([name, label, placeholder]) => (
-            <label key={name}>
-              <span>{label}</span>
-              <input name={name} placeholder={placeholder} />
-            </label>
-          ))}
-          <button type="submit">Create run</button>
+          <label>
+            <span>Seed handles</span>
+            <input name="seedHandles" placeholder="yestheory, drewbinsky" />
+          </label>
+          <div className="form-grid">
+            {[
+              ['maxAccepted', 'Max accepted', '1000'],
+              ['followingLimit', 'Following limit', '2000'],
+              ['qualificationWorkers', 'Workers', '32'],
+            ].map(([name, label, placeholder]) => (
+              <label key={name}>
+                <span>{label}</span>
+                <input name={name} placeholder={placeholder} />
+              </label>
+            ))}
+          </div>
+          <div className="form-actions">
+            <button type="submit">Create run</button>
+          </div>
         </form>
       </div>
 
@@ -407,22 +467,64 @@ function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaig
   );
 }
 
-function SenderCenter({ startAction, runs, commandAction }) {
+function SenderCenter({
+  startAction,
+  runs,
+  commandAction,
+  retryAction,
+  requeueAllAction,
+  queueTotals,
+  accounts,
+  campaign,
+  campaignSettings,
+}) {
+  const eligibleAccounts = (accounts || []).filter(
+    (account) => !account.campaign || account.campaign === campaign,
+  );
+  const campaignTemplate = campaignSettings?.message_template || '';
+  const failedInQueue = Number(queueTotals?.failed_retryable || 0) + Number(queueTotals?.failed_final || 0);
+
   return (
     <section className="band scraper-center">
       <div className="scraper-center-section">
         <h3>Start Sender Run</h3>
         <form action={startAction} className="run-form">
-          {[
-            ['accountUsernames', 'Accounts', 'account1, account2'],
-            ['maxSends', 'Max sends', '25'],
-          ].map(([name, label, placeholder]) => (
-            <label key={name}>
-              <span>{label}</span>
-              <input name={name} placeholder={placeholder} />
+          <div>
+            <span>Send from</span>
+            <p className="field-hint">None checked = any eligible account for {campaign}.</p>
+            {eligibleAccounts.length === 0 ? (
+              <p className="muted-copy">No sender accounts are assigned to this campaign yet. Assign them in Sender Accounts below.</p>
+            ) : (
+              <div className="account-picker">
+                {eligibleAccounts.map((account) => (
+                  <label key={account.username} className="account-checkbox">
+                    <input type="checkbox" name="accountUsernames" value={account.username} />
+                    <span className="account-handle">@{account.username}</span>
+                    <span className="account-pill">{account.campaign ? account.campaign : 'shared'}</span>
+                    {account.status !== 'active' ? (
+                      <span className="account-pill warn">{account.status}</span>
+                    ) : null}
+                    <span className="account-usage">
+                      {account.sends_today || 0}/{account.daily_send_limit} today
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <label>
+            <span>Message for this run (blank = campaign template)</span>
+            <textarea name="messageTemplate" rows={3} defaultValue={campaignTemplate} placeholder="Hey {name}, ..." />
+          </label>
+          <div className="form-grid">
+            <label className="narrow-field">
+              <span>Max sends</span>
+              <input name="maxSends" placeholder="25" />
             </label>
-          ))}
-          <button type="submit">Create run</button>
+          </div>
+          <div className="form-actions">
+            <button type="submit">Create run</button>
+          </div>
         </form>
       </div>
 
@@ -431,6 +533,13 @@ function SenderCenter({ startAction, runs, commandAction }) {
           <span className="run-tab-button is-active">
             Runs <span className="run-tab-count">{runs.length}</span>
           </span>
+          {failedInQueue > 0 ? (
+            <form action={requeueAllAction} className="run-tab-action">
+              <button type="submit" className="secondary-button">
+                Requeue all {failedInQueue} failed
+              </button>
+            </form>
+          ) : null}
         </div>
         <div className="run-tab-panel run-tab-panel-runs is-active">
           <div className="scraper-terminal">
@@ -443,6 +552,9 @@ function SenderCenter({ startAction, runs, commandAction }) {
                     <strong>DB: {displayRunStatus(run)}</strong>
                     <RunHealth run={run} />
                     <CloudStatusBadge run={run} />
+                    {run.requested_by === 'drain-worker' ? (
+                      <span className="run-health neutral">auto</span>
+                    ) : null}
                     <span>{run.account_usernames?.join(', ')}</span>
                     <small>{shortId(run.id)} | updated {formatDate(run.updated_at)}</small>
                     <small>{formatRunTimeline(run)}</small>
@@ -451,7 +563,7 @@ function SenderCenter({ startAction, runs, commandAction }) {
                     {run.pending_commands?.length ? <small>pending command: {run.pending_commands.join(', ')}</small> : null}
                     {run.error ? <small className="run-error">{run.error}</small> : null}
                   </div>
-                  {canCommandRun(run) ? (
+                  {canCommandRun(run) || Number(run.failed_remaining || 0) > 0 ? (
                     <div className="run-actions">
                       {canPauseRun(run) ? (
                         <RunCommandButton action={commandAction} runType="sender" runId={run.id} command="pause" />
@@ -462,6 +574,14 @@ function SenderCenter({ startAction, runs, commandAction }) {
                       {canStopRun(run) ? (
                         <RunCommandButton action={commandAction} runType="sender" runId={run.id} command="stop" />
                       ) : null}
+                      {Number(run.failed_remaining || 0) > 0 ? (
+                        <form action={retryAction}>
+                          <input type="hidden" name="runId" value={run.id} />
+                          <button type="submit" className="secondary-button">
+                            retry {run.failed_remaining} failed
+                          </button>
+                        </form>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -470,6 +590,75 @@ function SenderCenter({ startAction, runs, commandAction }) {
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+function SenderAccountsPanel({ accounts, campaign, updateAction }) {
+  return (
+    <section className="band sender-accounts-band">
+      <div className="band-header">
+        <h2>Sender Accounts</h2>
+      </div>
+      {(accounts || []).length === 0 ? (
+        <p className="muted-copy">No sender accounts in the database yet. They appear after their first send or via add-account.</p>
+      ) : (
+        <table className="accounts-table">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Sends today</th>
+              <th>Total sent</th>
+              <th>Last sent</th>
+              <th>Manage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((account) => (
+              <tr key={account.username}>
+                <td>
+                  <Link href={`/accounts/${account.username}?campaign=${campaign}`}>
+                    @{account.username}
+                  </Link>
+                </td>
+                <td>{account.sends_today || 0}/{account.daily_send_limit}</td>
+                <td>{account.total_sent || 0}</td>
+                <td>{account.last_sent_at ? relativeTime(account.last_sent_at) : 'never'}</td>
+                <td>
+                  <form action={updateAction} className="account-assign-form">
+                    <input type="hidden" name="username" value={account.username} />
+                    <select name="status" defaultValue={account.status}>
+                      <option value="active">active</option>
+                      <option value="paused">paused</option>
+                      <option value="blocked">blocked</option>
+                    </select>
+                    <input
+                      name="dailySendLimit"
+                      type="number"
+                      min="0"
+                      max="500"
+                      defaultValue={account.daily_send_limit}
+                      title="Daily send limit"
+                      className="account-limit-input"
+                    />
+                    <select name="campaign" defaultValue={account.campaign || ''}>
+                      <option value="">any campaign</option>
+                      {CAMPAIGNS.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                    <button type="submit" className="secondary-button">Save</button>
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted-copy">
+        Accounts assigned to a campaign only send for that campaign. “Any campaign” accounts can be picked by every campaign.
+        Click an account for its full DM history. Currently viewing {campaign}.
+      </p>
     </section>
   );
 }
@@ -603,8 +792,9 @@ function SenderRunDetails({ run }) {
           `skipped ${counters.skipped || 0}`,
           `failed ${(counters.failed_retryable || 0) + (counters.failed_final || 0)}`,
           `max sends ${run.max_sends || 'unset'}`,
+          run.message_template ? `msg "${truncateText(run.message_template, 60)}"` : null,
           run.last_attempt_at ? `last attempt ${relativeTime(run.last_attempt_at)}` : 'no attempts yet',
-        ].join(' | ')}
+        ].filter(Boolean).join(' | ')}
       </small>
       {attempts.length ? (
         <div className="attempt-list">
@@ -1105,6 +1295,11 @@ function positiveInt(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function truncateText(value, maxLength) {
+  const text = String(value || '');
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
 function shortId(id) {
   return String(id || '').slice(0, 8);
 }
@@ -1142,6 +1337,9 @@ function displayRunStatus(run) {
   if (run.pending_commands?.includes('stop')) return `${run.status} | stop pending`;
   if (run.pending_commands?.includes('resume')) return `${run.status} | resume pending`;
   if (run.pending_commands?.includes('pause')) return `${run.status} | pause pending`;
+  if (run.status === 'paused' && run.pause_reason === 'daily_send_limits_exhausted') {
+    return 'paused — daily limits exhausted, auto-resumes after reset';
+  }
   if (run.status !== 'running') return run.status;
   return Number(run.seconds_since_update || 0) > STALE_RUN_SECONDS ? 'running stale' : 'running';
 }

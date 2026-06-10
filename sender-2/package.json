@@ -8,7 +8,9 @@
     "import:dashboard": "node src/import-dashboard-data.js",
     "sender": "node src/sender.js",
     "sender:run": "node src/sender.js --claim-run",
+    "sender:drain": "node src/sender.js --drain",
     "worker:claim": "node src/sender.js --claim-run",
+    "add-account": "node src/add-account.js",
     "send:accounts": "node src/send-accounts.js",
     "send:accounts:run": "node src/send-accounts.js --claim-run",
     "test": "node --test tests/*.test.js"

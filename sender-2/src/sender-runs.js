@@ -24,6 +24,8 @@ export function incrementSenderRunCounters(counters, outcome) {
   return next;
 }
 
+export const PAUSE_REASON_NO_CAPACITY = 'daily_send_limits_exhausted';
+
 export async function claimNextSenderRun(pool, { campaign }) {
   return withTransaction(pool, async (client) => {
     const result = await client.query(
@@ -32,6 +34,7 @@ export async function claimNextSenderRun(pool, { campaign }) {
         set status = 'running',
             counters = coalesce(counters, '{}'::jsonb),
             error = null,
+            pause_reason = null,
             started_at = coalesce(started_at, now()),
             updated_at = now()
         where id = (
@@ -60,6 +63,7 @@ export async function claimSenderRunById(pool, { campaign, runId }) {
         set status = 'running',
             counters = coalesce(counters, '{}'::jsonb),
             error = null,
+            pause_reason = null,
             started_at = coalesce(started_at, now()),
             updated_at = now()
         where id = (
@@ -78,6 +82,52 @@ export async function claimSenderRunById(pool, { campaign, runId }) {
 
     return result.rows[0] || null;
   });
+}
+
+// Flip capacity-paused runs back to requested so the next worker tick picks
+// them up. Manual pauses (pause_reason is null) are never touched.
+export async function resumeCapacityPausedSenderRuns(pool, { campaign }) {
+  const result = await pool.query(
+    `
+      update sender_runs
+      set status = 'requested',
+          pause_reason = null,
+          updated_at = now()
+      where campaign = $1
+        and status = 'paused'
+        and pause_reason = $2
+      returning id
+    `,
+    [campaign, PAUSE_REASON_NO_CAPACITY],
+  );
+  return result.rowCount;
+}
+
+// A running run that can't proceed right now (eligible accounts exist but
+// are locked by another worker) goes back to requested for a later tick.
+export async function unclaimSenderRun(pool, { runId, counters }) {
+  await pool.query(
+    `
+      update sender_runs
+      set status = 'requested',
+          counters = $2,
+          updated_at = now()
+      where id = $1
+    `,
+    [runId, JSON.stringify(normalizeSenderRunCounters(counters))],
+  );
+}
+
+export async function createDrainSenderRun(pool, { campaign, requestedBy = 'drain-worker' }) {
+  const result = await pool.query(
+    `
+      insert into sender_runs (campaign, account_usernames, max_sends, requested_by)
+      values ($1, '{}'::text[], null, $2)
+      returning *
+    `,
+    [campaign, requestedBy],
+  );
+  return result.rows[0];
 }
 
 export async function saveSenderRunProgress(pool, { runId, counters }) {
@@ -110,16 +160,17 @@ export async function completeSenderRun(pool, { runId, counters, status }) {
   );
 }
 
-export async function pauseSenderRun(pool, { runId, counters }) {
+export async function pauseSenderRun(pool, { runId, counters, reason = null }) {
   await pool.query(
     `
       update sender_runs
       set status = 'paused',
           counters = $2,
+          pause_reason = $3,
           updated_at = now()
       where id = $1
     `,
-    [runId, JSON.stringify(normalizeSenderRunCounters(counters))],
+    [runId, JSON.stringify(normalizeSenderRunCounters(counters)), reason],
   );
 }
 

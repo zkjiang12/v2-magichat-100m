@@ -20,10 +20,26 @@ export async function loadAccounts(configPath) {
   return accounts;
 }
 
+const ACCOUNT_LOCK_STALE_MINUTES = 10;
+
+const ELIGIBLE_ACCOUNT_WHERE = `
+      where status = 'active'
+        and (cooldown_until is null or cooldown_until <= now())
+        and username <> all($1::text[])
+        and ($2::text[] = '{}'::text[] or username = any($2::text[]))
+        and ($3::text is null or campaign is null or campaign = $3::text)
+        and daily_send_limit > case
+          when last_sent_at is null then sends_today
+          when last_sent_at::date = current_date then sends_today
+          else 0
+        end
+`;
+
 export async function selectSenderAccount(pool, {
   allowedUsernames = [],
   excludedUsernames = DEFAULT_EXCLUDED_USERNAMES,
   accountConfigs = [],
+  campaign = null,
 } = {}) {
   const normalizedAllowed = normalizeUsernameList(allowedUsernames);
   const normalizedExcluded = normalizeUsernameList(excludedUsernames);
@@ -38,27 +54,109 @@ export async function selectSenderAccount(pool, {
           else 0
         end as effective_sends_today
       from sender_accounts
-      where username <> all($1::text[])
-        and ($2::text[] = '{}'::text[] or username = any($2::text[]))
-        and daily_send_limit > case
-          when last_sent_at is null then sends_today
-          when last_sent_at::date = current_date then sends_today
-          else 0
-        end
+      ${ELIGIBLE_ACCOUNT_WHERE}
+        and (
+          locked_by is null
+          or locked_at is null
+          or locked_at < now() - interval '${ACCOUNT_LOCK_STALE_MINUTES} minutes'
+        )
       order by
+        case when $3::text is not null and campaign = $3::text then 0 else 1 end asc,
         case when last_sent_at is null then 0 else 1 end asc,
         effective_sends_today asc,
         last_sent_at asc nulls first,
         username asc
       limit 1
     `,
-    [normalizedExcluded, normalizedAllowed],
+    [normalizedExcluded, normalizedAllowed, campaign || null],
   );
 
   const account = result.rows[0] || null;
   if (!account) return null;
 
   return mergeAccountConfig(account, findAccountConfig(accountConfigs, account.username));
+}
+
+// Every eligible account with capacity left today, locked ones included
+// (callers decide whether a held lock matters).
+export async function listEligibleSenderAccounts(pool, {
+  allowedUsernames = [],
+  excludedUsernames = DEFAULT_EXCLUDED_USERNAMES,
+  campaign = null,
+} = {}) {
+  const result = await pool.query(
+    `
+      select
+        *,
+        case
+          when last_sent_at is null then sends_today
+          when last_sent_at::date = current_date then sends_today
+          else 0
+        end as effective_sends_today,
+        (locked_by is not null and locked_at > now() - interval '${ACCOUNT_LOCK_STALE_MINUTES} minutes') as is_locked
+      from sender_accounts
+      ${ELIGIBLE_ACCOUNT_WHERE}
+      order by
+        case when $3::text is not null and campaign = $3::text then 0 else 1 end asc,
+        case when last_sent_at is null then 0 else 1 end asc,
+        effective_sends_today asc,
+        last_sent_at asc nulls first,
+        username asc
+    `,
+    [
+      normalizeUsernameList(excludedUsernames),
+      normalizeUsernameList(allowedUsernames),
+      campaign || null,
+    ],
+  );
+  return result.rows;
+}
+
+// Atomically take an account for one worker lane. Stale locks (crashed
+// workers) are claimable after ACCOUNT_LOCK_STALE_MINUTES.
+export async function lockSenderAccount(pool, { accountId, workerId }) {
+  const result = await pool.query(
+    `
+      update sender_accounts
+      set locked_by = $2,
+          locked_at = now(),
+          updated_at = now()
+      where id = $1
+        and (
+          locked_by is null
+          or locked_by = $2
+          or locked_at is null
+          or locked_at < now() - interval '${ACCOUNT_LOCK_STALE_MINUTES} minutes'
+        )
+      returning id
+    `,
+    [accountId, workerId],
+  );
+  return result.rowCount > 0;
+}
+
+export async function refreshSenderAccountLock(pool, { accountId, workerId }) {
+  await pool.query(
+    `
+      update sender_accounts
+      set locked_at = now()
+      where id = $1 and locked_by = $2
+    `,
+    [accountId, workerId],
+  );
+}
+
+export async function unlockSenderAccount(pool, { accountId, workerId }) {
+  await pool.query(
+    `
+      update sender_accounts
+      set locked_by = null,
+          locked_at = null,
+          updated_at = now()
+      where id = $1 and locked_by = $2
+    `,
+    [accountId, workerId],
+  );
 }
 
 export function loadAccountConfigs({ accountsJson = null, accountsPath = null, authDir = null } = {}) {
@@ -219,7 +317,7 @@ function normalizeAccountConfig(record, baseDir) {
   };
 }
 
-function findAccountConfig(configs, username) {
+export function findAccountConfig(configs, username) {
   const normalized = normalizeUsername(username);
   return configs.find((config) => normalizeUsername(config.username) === normalized) ||
     configs.find((config) => normalizeUsername(config.name) === normalized) ||

@@ -52,6 +52,13 @@ export async function claimNextQueueItem(pool, { workerId, campaign }) {
               or (sq.status = 'failed_retryable' and (sq.retry_after is null or sq.retry_after <= now()))
             )
             and sq.attempt_count < sq.max_attempts
+            and not exists (
+              select 1
+              from send_queue dup
+              where dup.creator_id = sq.creator_id
+                and dup.id <> sq.id
+                and dup.status in ('sent', 'claimed')
+            )
           order by sq.priority asc, sq.queued_at asc
           for update skip locked
           limit 1
@@ -72,6 +79,101 @@ export async function claimNextQueueItem(pool, { workerId, campaign }) {
     if (result.rowCount === 0) return null;
     return hydrateQueueItem(client, result.rows[0]);
   });
+}
+
+// Put a claimed item back untouched (e.g. capacity ran out before we tried
+// to send). Refunds the attempt that claiming charged.
+export async function releaseQueueItem(pool, { queueItem }) {
+  await pool.query(
+    `
+      update send_queue
+      set status = 'queued',
+          claimed_by = null,
+          claimed_at = null,
+          attempt_count = greatest(attempt_count - 1, 0),
+          updated_at = now()
+      where id = $1
+        and status = 'claimed'
+    `,
+    [queueItem.id],
+  );
+}
+
+// Claims older than maxAgeMinutes belong to dead workers. The send may or
+// may not have gone out before the crash, so the attempt stays charged and
+// the item goes to failed_retryable (immediately eligible); the provider's
+// already-in-thread check stops an actual double DM. Items out of attempts
+// land in failed_final, recoverable from the dashboard.
+export async function reclaimStuckQueueItems(pool, { campaign, maxAgeMinutes = 20 }) {
+  const result = await pool.query(
+    `
+      update send_queue
+      set status = case
+            when attempt_count >= max_attempts then 'failed_final'
+            else 'failed_retryable'
+          end,
+          last_error = 'reclaimed: claim went stale (worker likely crashed mid-send)',
+          retry_after = now(),
+          claimed_by = null,
+          claimed_at = null,
+          updated_at = now()
+      where campaign = $1
+        and status = 'claimed'
+        and claimed_at < now() - make_interval(mins => $2::int)
+      returning id
+    `,
+    [campaign, maxAgeMinutes],
+  );
+  return result.rowCount;
+}
+
+// How many items a worker could claim right now (mirrors the claim query).
+export async function countClaimableQueueItems(pool, { campaign }) {
+  const result = await pool.query(
+    `
+      select count(*)::int as count
+      from send_queue sq
+      where sq.campaign = $1
+        and (
+          sq.status = 'queued'
+          or (sq.status = 'failed_retryable' and (sq.retry_after is null or sq.retry_after <= now()))
+        )
+        and sq.attempt_count < sq.max_attempts
+        and not exists (
+          select 1
+          from send_queue dup
+          where dup.creator_id = sq.creator_id
+            and dup.id <> sq.id
+            and dup.status in ('sent', 'claimed')
+        )
+    `,
+    [campaign],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+// One DM per person ever: anyone already sent in another campaign gets this
+// campaign's pending row marked skipped, with the reason visible.
+export async function skipCrossCampaignDuplicates(pool, { campaign }) {
+  const result = await pool.query(
+    `
+      update send_queue sq
+      set status = 'skipped',
+          last_error = 'already messaged in campaign ' || dup.campaign,
+          claimed_by = null,
+          claimed_at = null,
+          updated_at = now()
+      from send_queue dup
+      where sq.campaign = $1
+        and sq.status in ('queued', 'failed_retryable')
+        and dup.creator_id = sq.creator_id
+        and dup.id <> sq.id
+        and dup.status = 'sent'
+      returning sq.id
+    `,
+    [campaign],
+  );
+  return result.rowCount;
 }
 
 export async function recordSendAttempt(

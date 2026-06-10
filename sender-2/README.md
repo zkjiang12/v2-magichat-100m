@@ -41,6 +41,16 @@ Apply the sender cloud metadata migration:
 psql "$DATABASE_URL" -f sql/migrations/009_add_sender_cloud_trigger_metadata.sql
 ```
 
+## Campaign routing and message templates
+
+Applied in `sql/migrations/010_add_campaign_routing_and_templates.sql`:
+
+- `sender_accounts.campaign` — assign an account to one campaign and it only sends for that campaign. Accounts with `campaign = null` are shared and can be picked by any campaign (campaign-dedicated accounts are preferred over shared ones).
+- `campaigns.message_template` — per-campaign default message, editable from the dashboard.
+- `sender_runs.message_template` — optional per-run override, set when creating a run from the dashboard.
+
+Message resolution order: run template -> per-account `metadata.message` -> campaign template -> `OUTBOUND_MESSAGE_TEMPLATE`.
+
 Fallback/admin polling is still available:
 
 ```bash

@@ -16,6 +16,7 @@ export async function getDashboardData({ campaign, range = '24h' }) {
   const scraperRuns = await queryScraperRuns(campaign);
   const senderRuns = await querySenderRuns(campaign);
   const senderAccounts = await querySenderAccounts();
+  const campaignSettings = await queryCampaignSettings(campaign);
   const runObservability = await queryRunObservability(campaign);
   const acceptedCreators = await queryCreators(campaign);
   const recentEvents = await queryRecentEvents(campaign);
@@ -35,6 +36,7 @@ export async function getDashboardData({ campaign, range = '24h' }) {
     scraperRuns,
     senderRuns,
     senderAccounts,
+    campaignSettings,
     runObservability,
     acceptedCreators,
     recentEvents,
@@ -80,20 +82,95 @@ export async function recordScraperCloudTrigger({ runId, operationName, target, 
   );
 }
 
-export async function createSenderRun({ campaign, accountUsernames, maxSends }) {
+export async function createSenderRun({ campaign, accountUsernames, maxSends, messageTemplate = null }) {
   const result = await query(
     `
       insert into sender_runs (
         campaign,
         account_usernames,
-        max_sends
+        max_sends,
+        message_template
       )
-      values ($1, $2, $3)
+      values ($1, $2, $3, $4)
       returning id
     `,
-    [campaign, accountUsernames, maxSends],
+    [campaign, accountUsernames, maxSends, messageTemplate],
   );
   return result.rows[0];
+}
+
+export async function updateSenderAccountSettings({ username, status, campaign, dailySendLimit }) {
+  await query(
+    `
+      update sender_accounts
+      set status = coalesce($2, status),
+          campaign = $3,
+          daily_send_limit = coalesce($4, daily_send_limit),
+          updated_at = now()
+      where username = $1
+    `,
+    [username, status, campaign, dailySendLimit],
+  );
+}
+
+export async function getSenderAccountDetail({ username }) {
+  const accountResult = await query(
+    `
+      select
+        a.id,
+        a.username,
+        a.status,
+        a.campaign,
+        a.daily_send_limit,
+        a.last_sent_at,
+        a.cooldown_until,
+        a.created_at,
+        coalesce(s.sends_today, 0) as sends_today,
+        coalesce(s.total_sent, 0) as total_sent,
+        coalesce(s.total_failed, 0) as total_failed,
+        coalesce(s.total_attempts, 0) as total_attempts
+      from sender_accounts a
+      left join lateral (
+        select
+          count(*) filter (where sa.status = 'sent' and sa.created_at::date = current_date)::int as sends_today,
+          count(*) filter (where sa.status = 'sent')::int as total_sent,
+          count(*) filter (where sa.status in ('failed_retryable', 'failed_final'))::int as total_failed,
+          count(*)::int as total_attempts
+        from send_attempts sa
+        where sa.sender_account_id = a.id
+      ) s on true
+      where a.username = $1
+      limit 1
+    `,
+    [username],
+  );
+
+  const account = accountResult.rows[0] || null;
+  if (!account) return null;
+
+  const attemptsResult = await query(
+    `
+      select
+        sa.status,
+        sa.provider,
+        sa.message,
+        sa.error,
+        sa.created_at,
+        sa.sender_run_id,
+        sq.campaign,
+        coalesce(c.handle, sq.recipient_handle) as recipient_handle,
+        c.profile_url
+      from send_attempts sa
+      join send_queue sq on sq.id = sa.send_queue_id
+      left join creators c on c.id = sq.creator_id
+      where sa.sender_account_id = $1
+      order by sa.created_at desc
+      limit 200
+    `,
+    [account.id],
+  );
+
+  return { account, attempts: attemptsResult.rows };
 }
 
 export async function recordSenderCloudTrigger({ runId, operationName, target, error }) {
@@ -209,6 +286,71 @@ export async function createRunCommand({ campaign, runType, runId, command }) {
       [campaign, runId, command],
     );
   }
+}
+
+const REQUEUE_SET_CLAUSE = `
+      set status = 'queued',
+          attempt_count = 0,
+          retry_after = null,
+          last_error = null,
+          claimed_by = null,
+          claimed_at = null,
+          updated_at = now()
+`;
+
+// Requeue the failures attempted by one specific run. Never touches sent rows.
+export async function requeueRunFailures({ runId, campaign }) {
+  if (!isUuid(runId)) throw new Error('Invalid run id');
+  const result = await query(
+    `
+      update send_queue sq
+      ${REQUEUE_SET_CLAUSE}
+      where sq.campaign = $2
+        and sq.status in ('failed_retryable', 'failed_final')
+        and exists (
+          select 1
+          from send_attempts sa
+          where sa.send_queue_id = sq.id
+            and sa.sender_run_id = $1
+        )
+      returning sq.id
+    `,
+    [runId, campaign],
+  );
+  return result.rowCount;
+}
+
+export async function requeueCampaignFailures({ campaign }) {
+  const result = await query(
+    `
+      update send_queue sq
+      ${REQUEUE_SET_CLAUSE}
+      where sq.campaign = $1
+        and sq.status in ('failed_retryable', 'failed_final')
+      returning sq.id
+    `,
+    [campaign],
+  );
+  return result.rowCount;
+}
+
+// Per-creator requeue; also revives skipped and dry_run rows since that's a
+// deliberate human override. Sent rows stay untouchable.
+export async function requeueCreatorSend({ handle, campaign }) {
+  const result = await query(
+    `
+      update send_queue sq
+      ${REQUEUE_SET_CLAUSE}
+      from creators c
+      where c.id = sq.creator_id
+        and c.handle = $1
+        and sq.campaign = $2
+        and sq.status in ('failed_retryable', 'failed_final', 'skipped', 'dry_run')
+      returning sq.id
+    `,
+    [handle, campaign],
+  );
+  return result.rowCount;
 }
 
 export async function getCreatorDetail({ handle, campaign }) {
@@ -602,9 +744,19 @@ async function querySenderRuns(campaign) {
       select
         id,
         status,
+        pause_reason,
+        requested_by,
         account_usernames,
         max_sends,
+        message_template,
         counters,
+        (
+          select count(distinct sq.id)::int
+          from send_attempts sa
+          join send_queue sq on sq.id = sa.send_queue_id
+          where sa.sender_run_id = sender_runs.id
+            and sq.status in ('failed_retryable', 'failed_final')
+        ) as failed_remaining,
         worker_target,
         cloud_operation_name,
         cloud_triggered_at,
@@ -709,12 +861,39 @@ async function queryRunObservability(campaign) {
 async function querySenderAccounts() {
   const result = await query(
     `
-      select username, status, daily_send_limit, sends_today, last_sent_at, cooldown_until
-      from sender_accounts
-      order by username asc
+      select
+        a.username,
+        a.status,
+        a.campaign,
+        a.daily_send_limit,
+        a.last_sent_at,
+        a.cooldown_until,
+        coalesce(s.sends_today, 0) as sends_today,
+        coalesce(s.total_sent, 0) as total_sent
+      from sender_accounts a
+      left join lateral (
+        select
+          count(*) filter (where sa.status = 'sent' and sa.created_at::date = current_date)::int as sends_today,
+          count(*) filter (where sa.status = 'sent')::int as total_sent
+        from send_attempts sa
+        where sa.sender_account_id = a.id
+      ) s on true
+      order by a.username asc
     `,
   );
   return result.rows;
+}
+
+async function queryCampaignSettings(campaign) {
+  const result = await query(
+    `
+      select name, message_template
+      from campaigns
+      where name = $1
+    `,
+    [campaign],
+  );
+  return result.rows[0] || { name: campaign, message_template: null };
 }
 
 async function queryCreators(campaign) {

@@ -338,7 +338,7 @@ as custom variables. Duplicates are blocked by the `instantly_sync` table plus
 
 Setup (one-time):
 
-1. Apply `sender-2/sql/migrations/010_add_creator_contacts_and_instantly_sync.sql`.
+1. Apply `sender-2/sql/migrations/015_add_creator_contacts_and_instantly_sync.sql`.
 2. Create the two campaigns in Instantly with their email sequences, then set
    `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID_UGC_CREATORS`, and
    `INSTANTLY_CAMPAIGN_ID_DAY_IN_LIFE_CREATORS` in `.env`.

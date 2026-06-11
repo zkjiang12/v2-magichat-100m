@@ -12,7 +12,7 @@ const UGC_TERMS = [
   'collaborations',
 ];
 
-function scoreUgcCreator(scrapedProfile, config) {
+export function scoreUgcCreator(scrapedProfile, config) {
   const followersCount = scrapedProfile.creator.followersCount;
   const minFollowers = config.instagramFollowerThreshold;
   const maxFollowers = config.instagramFollowerMax;

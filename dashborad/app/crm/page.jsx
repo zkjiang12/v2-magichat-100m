@@ -1,11 +1,16 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { revalidatePath } from 'next/cache';
 
-import { CAMPAIGNS } from '../../lib/campaigns';
-import { saveCreatorNote } from '../../lib/queries';
-import { LEAD_STATUSES, getCrmCampaignStats, getCrmLeads, setLeadStatus } from '../../lib/crm';
+import { LEAD_STATUSES, getCrmCampaignStats, getCrmLeads } from '../../lib/crm';
+import { LeadStatusButtons, NoteForm } from '../components/CrmControls';
+import Nav from '../components/Nav';
+import { BandSkeleton } from '../components/Skeletons';
 
 export const dynamic = 'force-dynamic';
+
+export const metadata = {
+  title: 'CRM — MagicHat',
+};
 
 const STATUS_LABELS = {
   needs_reply: 'needs reply',
@@ -14,12 +19,30 @@ const STATUS_LABELS = {
   churned: 'churned',
 };
 
-export default async function CrmPage({ searchParams }) {
+export default function CrmPage({ searchParams }) {
   const campaignFilter = String(searchParams?.campaign || 'all');
   const statusFilter = LEAD_STATUSES.includes(searchParams?.status) ? searchParams.status : 'all';
   const accountFilter = String(searchParams?.account || 'all');
   const minScore = clampScore(searchParams?.minScore);
 
+  return (
+    <>
+      <Nav title="CRM — DM Responses" subtitle="replies across campaigns" showCampaignTabs={false} />
+      <main>
+        <Suspense fallback={<BandSkeleton height={420} />}>
+          <CrmContent
+            campaignFilter={campaignFilter}
+            statusFilter={statusFilter}
+            accountFilter={accountFilter}
+            minScore={minScore}
+          />
+        </Suspense>
+      </main>
+    </>
+  );
+}
+
+async function CrmContent({ campaignFilter, statusFilter, accountFilter, minScore }) {
   const [allLeads, campaignStats] = await Promise.all([getCrmLeads(), getCrmCampaignStats()]);
 
   const accounts = [...new Set(allLeads.map((lead) => lead.sender_username).filter(Boolean))].sort();
@@ -40,137 +63,101 @@ export default async function CrmPage({ searchParams }) {
 
   const params = { campaign: campaignFilter, status: statusFilter, account: accountFilter, minScore };
 
-  async function updateStatus(formData) {
-    'use server';
-    await setLeadStatus({
-      handle: String(formData.get('handle') || ''),
-      campaign: String(formData.get('campaign') || ''),
-      status: String(formData.get('status') || ''),
-    });
-    revalidatePath('/crm');
-  }
-
-  async function saveNote(formData) {
-    'use server';
-    await saveCreatorNote({
-      handle: String(formData.get('handle') || ''),
-      campaign: String(formData.get('campaign') || ''),
-      note: String(formData.get('note') || ''),
-    });
-    revalidatePath('/crm');
-  }
-
   return (
     <>
-      <header className="topbar">
-        <div>
-          <h1>CRM - DM Responses</h1>
-          <p>{leads.length} {statusFilter === 'all' ? 'leads' : STATUS_LABELS[statusFilter]} shown</p>
-        </div>
-        <div className="range-tabs">
-          <Link href="/" className="range-tab">Campaign dashboard</Link>
-        </div>
-      </header>
-      <main>
-        <section className="crm-campaign-grid">
-          {campaignStats.map((stat) => {
-            const active = campaignFilter === stat.campaign;
-            return (
-              <Link
-                key={stat.campaign}
-                href={crmHref({ ...params, campaign: active ? 'all' : stat.campaign })}
-                className={`panel crm-campaign-card${active ? ' active' : ''}`}
-              >
-                <h2>{stat.campaign}</h2>
-                <p className="crm-bignum">
-                  {stat.responders}
-                  <span> / {stat.sent} sent</span>
-                </p>
-                <div className="crm-bar">
-                  <div style={{ width: `${Math.min(100, Math.round(stat.replyRate * 100))}%` }} />
-                </div>
-                <p className="muted-copy">
-                  {(stat.replyRate * 100).toFixed(1)}% reply rate
-                  {' · '}{stat.interested} interested · {stat.closed} closed · {stat.churned} churned
-                </p>
-              </Link>
-            );
-          })}
-        </section>
+      <section className="crm-campaign-grid">
+        {campaignStats.map((stat) => {
+          const active = campaignFilter === stat.campaign;
+          return (
+            <Link
+              key={stat.campaign}
+              href={crmHref({ ...params, campaign: active ? 'all' : stat.campaign })}
+              className={`panel crm-campaign-card${active ? ' active' : ''}`}
+            >
+              <h2>{stat.campaign}</h2>
+              <p className="crm-bignum">
+                {stat.responders}
+                <span> / {stat.sent} sent</span>
+              </p>
+              <div className="crm-bar">
+                <div style={{ width: `${Math.min(100, Math.round(stat.replyRate * 100))}%` }} />
+              </div>
+              <p className="muted-copy">
+                {(stat.replyRate * 100).toFixed(1)}% reply rate
+                {' · '}{stat.interested} interested · {stat.closed} closed · {stat.churned} churned
+              </p>
+            </Link>
+          );
+        })}
+      </section>
 
-        <section className="band">
-          <div className="band-header">
-            <h2>Leads</h2>
-            <div className="range-tabs">
+      <section className="band">
+        <div className="band-header">
+          <h2>Leads ({leads.length} shown)</h2>
+          <div className="range-tabs">
+            <Link
+              href={crmHref({ ...params, status: 'all' })}
+              className={`range-tab${statusFilter === 'all' ? ' active' : ''}`}
+            >
+              all ({scoped.length})
+            </Link>
+            {LEAD_STATUSES.map((status) => (
               <Link
-                href={crmHref({ ...params, status: 'all' })}
-                className={`range-tab${statusFilter === 'all' ? ' active' : ''}`}
+                key={status}
+                href={crmHref({ ...params, status })}
+                className={`range-tab${statusFilter === status ? ' active' : ''}`}
               >
-                all ({scoped.length})
+                {STATUS_LABELS[status]} ({statusCounts[status]})
               </Link>
-              {LEAD_STATUSES.map((status) => (
-                <Link
-                  key={status}
-                  href={crmHref({ ...params, status })}
-                  className={`range-tab${statusFilter === status ? ' active' : ''}`}
-                >
-                  {STATUS_LABELS[status]} ({statusCounts[status]})
-                </Link>
-              ))}
-            </div>
+            ))}
           </div>
+        </div>
 
-          <form method="get" action="/crm" className="crm-filters">
-            <input type="hidden" name="campaign" value={campaignFilter} />
-            <input type="hidden" name="status" value={statusFilter} />
-            <label>
-              <span>Account</span>
-              <select name="account" defaultValue={accountFilter}>
-                <option value="all">all accounts</option>
-                {accounts.map((username) => (
-                  <option key={username} value={username}>@{username}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Min score</span>
-              <select name="minScore" defaultValue={String(minScore)}>
-                <option value="0">any</option>
-                <option value="2">2+</option>
-                <option value="3">3+</option>
-                <option value="4">4 only</option>
-              </select>
-            </label>
-            <button type="submit" className="secondary-button">Apply</button>
-            {(campaignFilter !== 'all' || statusFilter !== 'all' || accountFilter !== 'all' || minScore > 0) ? (
-              <Link href="/crm" className="muted-copy">clear filters</Link>
-            ) : null}
-          </form>
-
-          {leads.length === 0 ? (
-            <p className="empty-state">
-              No responses recorded yet. Run <code>npm run check-inbox</code> in sender-2 to pull replies
-              from your sender accounts.
-            </p>
-          ) : (
-            <div className="crm-lead-list">
-              {leads.map((lead) => (
-                <LeadRow
-                  key={`${lead.handle}-${lead.campaign}`}
-                  lead={lead}
-                  updateStatus={updateStatus}
-                  saveNote={saveNote}
-                />
+        <form method="get" action="/crm" className="crm-filters">
+          <input type="hidden" name="campaign" value={campaignFilter} />
+          <input type="hidden" name="status" value={statusFilter} />
+          <label>
+            <span>Account</span>
+            <select name="account" defaultValue={accountFilter}>
+              <option value="all">all accounts</option>
+              {accounts.map((username) => (
+                <option key={username} value={username}>@{username}</option>
               ))}
-            </div>
-          )}
-        </section>
-      </main>
+            </select>
+          </label>
+          <label>
+            <span>Min score</span>
+            <select name="minScore" defaultValue={String(minScore)}>
+              <option value="0">any</option>
+              <option value="2">2+</option>
+              <option value="3">3+</option>
+              <option value="4">4 only</option>
+            </select>
+          </label>
+          <button type="submit" className="secondary-button">Apply</button>
+          {(campaignFilter !== 'all' || statusFilter !== 'all' || accountFilter !== 'all' || minScore > 0) ? (
+            <Link href="/crm" className="muted-copy">clear filters</Link>
+          ) : null}
+        </form>
+
+        {leads.length === 0 ? (
+          <p className="empty-state">
+            No responses recorded yet. Run <code>npm run check-inbox</code> in sender-2 to pull replies
+            from your sender accounts.
+          </p>
+        ) : (
+          <div className="crm-lead-list">
+            {leads.map((lead) => (
+              <LeadRow key={`${lead.handle}-${lead.campaign}`} lead={lead} />
+            ))}
+          </div>
+        )}
+      </section>
     </>
   );
 }
 
-function LeadRow({ lead, updateStatus, saveNote }) {
+function LeadRow({ lead }) {
   const messages = Array.isArray(lead.messages) ? lead.messages : [];
   const latest = messages[0];
 
@@ -220,28 +207,15 @@ function LeadRow({ lead, updateStatus, saveNote }) {
             </p>
           ) : null}
 
-          <form action={updateStatus} className="crm-status-buttons">
-            <input type="hidden" name="handle" value={lead.handle} />
-            <input type="hidden" name="campaign" value={lead.campaign} />
-            {LEAD_STATUSES.map((status) => (
-              <button
-                key={status}
-                type="submit"
-                name="status"
-                value={status}
-                className={`secondary-button${lead.lead_status === status ? ' active' : ''}`}
-              >
-                {STATUS_LABELS[status]}
-              </button>
-            ))}
-          </form>
+          <LeadStatusButtons
+            handle={lead.handle}
+            campaign={lead.campaign}
+            currentStatus={lead.lead_status}
+            statuses={LEAD_STATUSES}
+            labels={STATUS_LABELS}
+          />
 
-          <form action={saveNote} className="run-form">
-            <input type="hidden" name="handle" value={lead.handle} />
-            <input type="hidden" name="campaign" value={lead.campaign} />
-            <textarea name="note" defaultValue={lead.note || ''} placeholder="Add a note..." />
-            <button type="submit">Save note</button>
-          </form>
+          <NoteForm handle={lead.handle} campaign={lead.campaign} note={lead.note} />
         </div>
       </div>
     </details>

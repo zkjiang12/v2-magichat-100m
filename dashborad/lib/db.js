@@ -16,8 +16,14 @@ function getPool() {
   const { Pool } = require('pg');
   pool = new Pool({
     connectionString: databaseUrl,
-    max: numberEnv('DATABASE_POOL_MAX', 2),
-    idleTimeoutMillis: 10_000,
+    // Dashboard sections fetch in parallel; 2 connections serializes them
+    // again. But the upstream pooler caps ALL clients (both dashboard
+    // instances + workers) at 15 session slots, so stay modest here.
+    max: numberEnv('DATABASE_POOL_MAX', 4),
+    // Keep connections warm across auto-refresh ticks so navigations don't
+    // re-pay the SSL handshake.
+    idleTimeoutMillis: 30_000,
+    keepAlive: true,
     connectionTimeoutMillis: 10_000,
     ssl: shouldUseSsl(databaseUrl) ? { rejectUnauthorized: false } : false,
   });

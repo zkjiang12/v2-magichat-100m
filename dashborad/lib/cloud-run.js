@@ -7,6 +7,14 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const METADATA_TOKEN_URL =
   'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 
+// Access tokens are valid for ~1h; minting one per status check doubled every
+// Cloud Run API call. Refresh 2 minutes before expiry.
+let tokenCache = { token: null, expiresAt: 0 };
+
+// Operations never leave a terminal state, so remember them for the life of
+// the server instance instead of re-fetching on every page view.
+const terminalOperationCache = new Map();
+
 export async function triggerScraperCloudRunJob({ runId, campaign }) {
   if (!runId) throw new Error('Cloud Run scraper trigger requires a run id.');
   return triggerCloudRunJob({
@@ -40,6 +48,9 @@ export async function triggerSenderCloudRunJob({ runId, campaign }) {
 export async function getCloudRunOperationStatus({ operationName }) {
   if (!operationName) return { status: 'not_triggered' };
 
+  const cached = terminalOperationCache.get(operationName);
+  if (cached) return cached;
+
   try {
     const token = await getAccessToken();
     const response = await fetch(cloudRunResourceUrl(operationName), {
@@ -57,7 +68,9 @@ export async function getCloudRunOperationStatus({ operationName }) {
       };
     }
 
-    return normalizeOperationStatus(await response.json());
+    const status = normalizeOperationStatus(await response.json());
+    if (status.done === true) terminalOperationCache.set(operationName, status);
+    return status;
   } catch (error) {
     return {
       status: 'unknown',
@@ -146,6 +159,19 @@ function normalizeOperationStatus(operation) {
 }
 
 async function getAccessToken() {
+  if (tokenCache.token && Date.now() < tokenCache.expiresAt) {
+    return tokenCache.token;
+  }
+
+  const minted = await mintAccessToken();
+  tokenCache = {
+    token: minted.token,
+    expiresAt: Date.now() + (Number(minted.expiresIn) || 300) * 1000 - 120_000,
+  };
+  return minted.token;
+}
+
+async function mintAccessToken() {
   const serviceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (serviceAccountJson) {
     return getServiceAccountAccessToken(JSON.parse(serviceAccountJson));
@@ -169,7 +195,8 @@ async function getMetadataAccessToken() {
     });
     if (!response.ok) return null;
     const payload = await response.json();
-    return payload.access_token || null;
+    if (!payload.access_token) return null;
+    return { token: payload.access_token, expiresIn: payload.expires_in };
   } catch {
     return null;
   }
@@ -204,7 +231,7 @@ async function getServiceAccountAccessToken(credentials) {
   }
 
   const payload = await response.json();
-  return payload.access_token;
+  return { token: payload.access_token, expiresIn: payload.expires_in || 3600 };
 }
 
 async function getApplicationDefaultAccessToken() {
@@ -240,7 +267,7 @@ async function getAuthorizedUserAccessToken(credentials) {
   }
 
   const payload = await response.json();
-  return payload.access_token;
+  return { token: payload.access_token, expiresIn: payload.expires_in || 3600 };
 }
 
 async function signRs256(input, privateKeyPem) {

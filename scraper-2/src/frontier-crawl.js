@@ -13,8 +13,13 @@ import {
 import {
   annotateFollowingCandidateForPrefilter,
   buildScrapeHardNoReview,
-  isKnownOutsideFollowerRange,
+  classifyDiscoveredCandidate,
 } from './qualification.js';
+import {
+  collectMissingQueuedHandles,
+  mergeCampaignSeen,
+  ownSeenRecords,
+} from './run-state.js';
 import { scoreCreatorDetailed } from './scorer.js';
 import { saveEvaluationRecord } from './storage.js';
 
@@ -68,8 +73,16 @@ async function main() {
     await dashboardRecorder.close();
     return;
   }
+  if (runContext.notClaimable) {
+    console.log(
+      `scraper_runs row ${options.runId} was not claimable (missing, finished, or already claimed by another worker); exiting without work.`,
+    );
+    await dashboardRecorder.close();
+    return;
+  }
 
   const { state, runId } = runContext;
+  await hydrateCampaignSeen({ recorder: dashboardRecorder, runId, state });
   options.maxAccepted = runContext.maxAccepted;
   if (runContext.followingLimit !== null && runContext.followingLimit !== undefined) {
     config.instagramFollowingLimit = runContext.followingLimit;
@@ -94,10 +107,20 @@ async function main() {
 
     statsTimer = setInterval(() => {
       printProgress({ state, label: 'heartbeat' });
+      // Keep updated_at fresh during long discovery calls so a healthy run
+      // never looks abandoned to the stale-claim takeover.
+      dashboardRecorder.touchScraperRun({ runId }).catch((error) => {
+        console.warn(`[run ${runId}] heartbeat failed: ${error.message}`);
+      });
     }, STATS_INTERVAL_MS);
 
     try {
-      if (state.qualificationQueue.length > 0) {
+      // Apply any command that arrived while the run was unclaimed; otherwise
+      // a reclaimed at-cap run can finish as 'completed' with a pending stop
+      // command stranded forever.
+      await applyPendingRunCommand({ recorder: dashboardRecorder, runId, state, saveState });
+
+      if (!stopRequested && state.qualificationQueue.length > 0) {
         await drainCarryoverQueue({
           runId,
           state,
@@ -226,6 +249,7 @@ async function expandSeed({ seed, runId, state, saveState, config, maxAccepted, 
     };
 
     const filterStats = await enqueueDiscoveredCandidates({
+      runId,
       state,
       sourceSeed: seed,
       candidates: discovery.candidates,
@@ -244,6 +268,7 @@ async function expandSeed({ seed, runId, state, saveState, config, maxAccepted, 
         `followers=${filterStats.followers}`,
         `hard_no=${filterStats.hardNo}`,
         `duplicate=${filterStats.duplicate}`,
+        `retried=${filterStats.retried}`,
       ].join(' '),
     );
     if (discovery.rawCount >= discovery.requestedLimit) {
@@ -273,7 +298,15 @@ async function expandSeed({ seed, runId, state, saveState, config, maxAccepted, 
   await saveState(state);
 }
 
-async function enqueueDiscoveredCandidates({ state, sourceSeed, candidates, config }) {
+const SEEN_STATUS_STAT_KEYS = {
+  queued: 'queued',
+  filtered_private: 'private',
+  filtered_unverified: 'unverified',
+  filtered_followers: 'followers',
+  filtered_hard_no: 'hardNo',
+};
+
+async function enqueueDiscoveredCandidates({ runId, state, sourceSeed, candidates, config }) {
   const stats = {
     queued: 0,
     private: 0,
@@ -282,8 +315,12 @@ async function enqueueDiscoveredCandidates({ state, sourceSeed, candidates, conf
     hardNo: 0,
     duplicate: 0,
     invalid: 0,
+    retried: 0,
   };
-  const seenRecords = [];
+
+  const pending = [];
+  const pendingHandles = new Set();
+  const retryUpdates = [];
 
   for (const candidate of candidates) {
     const handle = normalizeHandle(candidate.handle || '');
@@ -292,70 +329,64 @@ async function enqueueDiscoveredCandidates({ state, sourceSeed, candidates, conf
       continue;
     }
 
-    if (state.seen[handle]) {
+    if (pendingHandles.has(handle)) {
+      stats.duplicate += 1;
+      continue;
+    }
+
+    // Campaign-wide dedup: the hydrated seen map covers every handle this
+    // campaign has already discovered, in this run or any other. Retry-
+    // eligible: previously failed, skipped by the accepted cap, or queued by
+    // another (possibly dead) run — the atomic update below decides whether
+    // the takeover is allowed.
+    const existing = state.seen[handle];
+    const retryEligible =
+      existing &&
+      (existing.status === 'failed' ||
+        existing.status === 'cap_skipped' ||
+        (existing.status === 'queued' && existing.fromOtherRun));
+    if (existing && !retryEligible) {
       stats.duplicate += 1;
       continue;
     }
 
     const prefilteredCandidate = annotateFollowingCandidateForPrefilter({ candidate, config });
+    const status = classifyDiscoveredCandidate({ candidate: prefilteredCandidate, config });
+    const record = buildSeenRecord({ handle, status, sourceSeed, candidate: prefilteredCandidate });
 
-    if (prefilteredCandidate.isPrivate === true) {
-      state.seen[handle] = buildSeenRecord({
-        handle,
-        status: 'filtered_private',
-        sourceSeed,
-        candidate: prefilteredCandidate,
-      });
-      seenRecords.push(state.seen[handle]);
-      stats.private += 1;
+    pendingHandles.add(handle);
+    pending.push({ record, status, retry: Boolean(existing) });
+    if (existing) retryUpdates.push({ handle, status });
+  }
+
+  // campaign_seen is the atomic cross-run dedup arbiter: a handle belongs to
+  // this run only if its row was inserted (or atomically reclaimed) here.
+  // Handles that conflict were taken by a concurrent run of this campaign.
+  const inserted = await config.dashboardRecorder.insertCampaignSeenMany({
+    records: pending.filter((entry) => !entry.retry).map((entry) => entry.record),
+    runId,
+  });
+  const retried = await config.dashboardRecorder.requeueRetryableCampaignSeen({
+    updates: retryUpdates,
+    runId,
+  });
+
+  const seenRecords = [];
+  for (const { record, status, retry } of pending) {
+    const owned = retry ? retried.has(record.handle) : inserted.has(record.handle);
+    if (!owned) {
+      stats.duplicate += 1;
+      state.seen[record.handle] = { handle: record.handle, status: 'duplicate', fromOtherRun: true };
       continue;
     }
 
-    if (config.instagramRequireVerified && prefilteredCandidate.isVerified !== true) {
-      state.seen[handle] = buildSeenRecord({
-        handle,
-        status: 'filtered_unverified',
-        sourceSeed,
-        candidate: prefilteredCandidate,
-      });
-      seenRecords.push(state.seen[handle]);
-      stats.unverified += 1;
-      continue;
-    }
-
-    if (isKnownOutsideFollowerRange({ candidate: prefilteredCandidate, config })) {
-      state.seen[handle] = buildSeenRecord({
-        handle,
-        status: 'filtered_followers',
-        sourceSeed,
-        candidate: prefilteredCandidate,
-      });
-      seenRecords.push(state.seen[handle]);
-      stats.followers += 1;
-      continue;
-    }
-
-    if (prefilteredCandidate.hardNo === true) {
-      state.seen[handle] = buildSeenRecord({
-        handle,
-        status: 'filtered_hard_no',
-        sourceSeed,
-        candidate: prefilteredCandidate,
-      });
-      seenRecords.push(state.seen[handle]);
-      stats.hardNo += 1;
-      continue;
-    }
-
-    state.seen[handle] = buildSeenRecord({
-      handle,
-      status: 'queued',
-      sourceSeed,
-      candidate: prefilteredCandidate,
-    });
-    seenRecords.push(state.seen[handle]);
-    state.qualificationQueue.push(handle);
-    stats.queued += 1;
+    if (retry) stats.retried += 1;
+    state.seen[record.handle] = record;
+    // Retried handles already have a creator row and a 'seen' scrape event
+    // from their first discovery; re-recording would inflate dashboard totals.
+    if (!retry) seenRecords.push(record);
+    stats[SEEN_STATUS_STAT_KEYS[status]] += 1;
+    if (status === 'queued') state.qualificationQueue.push(record.handle);
   }
 
   if (seenRecords.length > 0) {
@@ -363,6 +394,46 @@ async function enqueueDiscoveredCandidates({ state, sourceSeed, candidates, conf
   }
 
   return stats;
+}
+
+async function hydrateCampaignSeen({ recorder, runId, state }) {
+  // One-time migration path: runs created before campaign_seen still carry
+  // their seen map inside the state blob. Backfill it, then the table is the
+  // source of truth and the blob is saved without it from here on.
+  const blobSeen = state.seen || {};
+  const blobRecords = Object.values(blobSeen).filter((record) => record.handle && record.status);
+  if (blobRecords.length > 0) {
+    await recorder.insertCampaignSeenMany({ records: blobRecords, runId });
+  }
+
+  const tableRows = await recorder.loadCampaignSeen();
+  state.seen = mergeCampaignSeen({ blobSeen, tableRows, runId });
+
+  const missingQueued = collectMissingQueuedHandles({
+    seen: state.seen,
+    qualificationQueue: state.qualificationQueue,
+    runId,
+  });
+  // cap_skipped rows must flip to 'queued' in the table before this run
+  // requeues them, or a concurrent run could adopt them mid-flight; only
+  // handles the flip actually returned still belong to this run.
+  const capSkipped = missingQueued.filter((handle) => state.seen[handle].status === 'cap_skipped');
+  const flipped = await recorder.requeueOwnCapSkippedCampaignSeen({ handles: capSkipped, runId });
+  for (const handle of missingQueued) {
+    if (state.seen[handle].status === 'cap_skipped' && !flipped.has(handle)) continue;
+    state.qualificationQueue.push(handle);
+    state.seen[handle].status = 'queued';
+  }
+
+  console.log(
+    [
+      `[hydrate] campaign seen-set: ${tableRows.length} rows`,
+      `ownedByRun=${ownSeenRecords(state.seen).length}`,
+      missingQueued.length > 0 ? `requeuedFromTable=${missingQueued.length}` : null,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
 }
 
 async function drainQualificationQueue({ runId, state, saveState, config, maxAccepted, sourceSeed, workerCount }) {
@@ -414,7 +485,7 @@ async function runQualificationWorker({ workerId, runId, state, saveState, confi
     await saveState(state);
 
     try {
-      await qualifyCandidate({ handle, state, saveState, config, sourceSeed, maxAccepted });
+      await qualifyCandidate({ handle, runId, state, saveState, config, sourceSeed, maxAccepted });
     } finally {
       activeQualifications -= 1;
     }
@@ -424,18 +495,21 @@ async function runQualificationWorker({ workerId, runId, state, saveState, confi
 function dequeueQualificationCandidate(state) {
   while (state.qualificationQueue.length > 0) {
     const handle = state.qualificationQueue.shift();
-    if (state.seen[handle]?.status === 'queued') return handle;
+    const record = state.seen[handle];
+    // A legacy blob queue can reference handles another run now owns; never
+    // process those.
+    if (record?.status === 'queued' && !record.fromOtherRun) return handle;
   }
   return null;
 }
 
-async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, maxAccepted }) {
+async function qualifyCandidate({ handle, runId, state, saveState, config, sourceSeed, maxAccepted }) {
   try {
     const scrapedProfile = await scrapeInstagramProfile({ handle, config });
     const hardNoReview = buildScrapeHardNoReview({ scrapedProfile, config });
     if (hardNoReview) {
       const saved = await saveEvaluation({ handle, scrapedProfile, aiReview: hardNoReview });
-      await markScored({ state, handle, aiReview: hardNoReview, saved, config, maxAccepted, scrapedProfile });
+      await markScored({ state, handle, runId, aiReview: hardNoReview, saved, config, maxAccepted, scrapedProfile });
       console.log(`[seed @${sourceSeed.handle}] HARD NO @${handle}: ${hardNoReview.reasoning}`);
       await saveState(state);
       return;
@@ -447,7 +521,7 @@ async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, 
     }
     const aiReview = scored.review;
     const saved = await saveEvaluation({ handle, scrapedProfile, aiReview });
-    const accepted = await markScored({ state, handle, aiReview, saved, config, maxAccepted, scrapedProfile });
+    const accepted = await markScored({ state, handle, runId, aiReview, saved, config, maxAccepted, scrapedProfile });
 
     if (accepted) {
       addFrontierSeed({
@@ -475,6 +549,7 @@ async function qualifyCandidate({ handle, state, saveState, config, sourceSeed, 
       error: error.message,
     };
     await config.dashboardRecorder?.recordFailed(state.seen[handle]);
+    await config.dashboardRecorder?.updateCampaignSeenStatus({ handle, status: 'failed', runId });
     state.failedCount += 1;
     console.error(`[seed @${sourceSeed.handle}] @${handle} failed: ${error.message}`);
     await saveState(state);
@@ -490,7 +565,7 @@ async function saveEvaluation({ handle, scrapedProfile, aiReview }) {
   });
 }
 
-async function markScored({ state, handle, aiReview, saved, config, maxAccepted, scrapedProfile }) {
+async function markScored({ state, handle, runId, aiReview, saved, config, maxAccepted, scrapedProfile }) {
   const record = state.seen[handle] || { handle };
   const wouldAccept = config.campaignDefinition.accept(aiReview);
   const accepted = wouldAccept && state.acceptedCount < maxAccepted;
@@ -516,6 +591,15 @@ async function markScored({ state, handle, aiReview, saved, config, maxAccepted,
   state.processedCount += 1;
   if (accepted) state.acceptedCount += 1;
   await config.dashboardRecorder?.recordEvaluated(state.seen[handle]);
+  // Accept-worthy candidates that lost the accepted-cap race get a
+  // 'cap_skipped' table status so a later run (or extending this one) can
+  // recover them instead of blacklisting them campaign-wide as rejected.
+  const campaignSeenStatus = accepted ? 'accepted' : wouldAccept ? 'cap_skipped' : 'rejected';
+  await config.dashboardRecorder?.updateCampaignSeenStatus({
+    handle,
+    status: campaignSeenStatus,
+    runId,
+  });
   return accepted;
 }
 
@@ -586,7 +670,7 @@ async function loadOrCreatePostgresRun({
   if (runId) {
     const provisionalFallbackState = createInitialFrontierState({ seedHandles, maxAccepted });
     const run = await recorder.claimScraperRun({ runId, fallbackState: provisionalFallbackState });
-    if (!run) throw new Error(`scraper_runs row not found: ${runId}`);
+    if (!run) return { notClaimable: true };
     assertRunCampaignMatches({ run, campaign });
 
     const runSeedHandles = run.seed_handles?.length ? run.seed_handles : seedHandles;
@@ -714,7 +798,7 @@ function normalizeFrontierState(state, { maxAccepted }) {
     mode: 'frontier',
     createdAt: state.createdAt || new Date().toISOString(),
     updatedAt: state.updatedAt || new Date().toISOString(),
-    maxAccepted: state.maxAccepted || maxAccepted,
+    maxAccepted: maxAccepted || state.maxAccepted,
     acceptedCount: state.acceptedCount || countStatus(state, 'accepted'),
     processedCount: state.processedCount || countStatus(state, 'accepted') + countStatus(state, 'rejected'),
     failedCount: state.failedCount || countStatus(state, 'failed'),
@@ -779,7 +863,7 @@ function printProgress({ state, label }) {
   console.log(
     [
       `\n=== Frontier ${label} ===`,
-      `accepted=${state.acceptedCount} processed=${state.processedCount} failed=${state.failedCount} seen=${Object.keys(state.seen).length} currentSeed=${state.currentSeed || 'none'}`,
+      `accepted=${state.acceptedCount} processed=${state.processedCount} failed=${state.failedCount} seen=${ownSeenRecords(state.seen).length} currentSeed=${state.currentSeed || 'none'}`,
       `queue=${state.qualificationQueue.length} activeQualifications=${activeQualifications}`,
       `statuses: accepted=${counts.accepted || 0} rejected=${counts.rejected || 0} queued=${counts.queued || 0} processing=${counts.processing || 0} failed=${counts.failed || 0}`,
       `filtered: private=${counts.filtered_private || 0} unverified=${counts.filtered_unverified || 0} followers=${counts.filtered_followers || 0} hard_no=${counts.filtered_hard_no || 0}`,
@@ -791,7 +875,7 @@ function printProgress({ state, label }) {
 
 function countStatuses(state) {
   const counts = {};
-  for (const record of Object.values(state.seen)) {
+  for (const record of ownSeenRecords(state.seen)) {
     counts[record.status] = (counts[record.status] || 0) + 1;
   }
   return counts;
@@ -806,7 +890,7 @@ function countFrontierStatuses(state) {
 }
 
 function countStatus(state, status) {
-  return Object.values(state.seen || {}).filter((record) => record.status === status).length;
+  return ownSeenRecords(state.seen || {}).filter((record) => record.status === status).length;
 }
 
 function timestampValue(value) {
@@ -824,7 +908,10 @@ function installShutdownHandlers({ state, saveState, recorder, runId }) {
     stopRequested = true;
     console.log(`${signal} received; saving frontier state and letting active API calls finish...`);
     await saveState(state);
-    await recorder.completeScraperRun({ runId, state, status: 'stopped' });
+    // Mark stop_requested, not stopped: in-flight workers are still finishing
+    // and the normal exit path writes the final terminal status. Marking the
+    // run terminal here would let a dashboard extend race the dying worker.
+    await recorder.saveScraperRunState({ runId, state, status: 'stop_requested' });
     printProgress({ state, label: 'stopping' });
   }
 

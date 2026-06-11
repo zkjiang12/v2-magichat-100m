@@ -13,6 +13,7 @@ import {
   createRunCommand,
   createScraperRun,
   createSenderRun,
+  extendScraperRun,
   getDashboardData,
   recordScraperCloudTrigger,
   recordSenderCloudTrigger,
@@ -178,6 +179,35 @@ export default async function DashboardPage({ searchParams }) {
     revalidatePath('/');
   }
 
+  async function extendRun(formData) {
+    'use server';
+    const runId = String(formData.get('runId'));
+    const addAccepted = positiveInt(formData.get('addAccepted'), 500);
+
+    const extended = await extendScraperRun({ campaign, runId, addAccepted });
+    if (!extended) return;
+
+    try {
+      const trigger = await triggerScraperCloudRunJob({ runId, campaign });
+      if (trigger) {
+        await recordScraperCloudTrigger({
+          runId,
+          operationName: trigger.name,
+          target: trigger.target,
+        });
+      }
+    } catch (caught) {
+      await recordScraperCloudTrigger({
+        runId,
+        target: 'cloud_run_job',
+        error: caught.message,
+      });
+      throw caught;
+    }
+
+    revalidatePath('/');
+  }
+
   return (
     <Shell campaign={campaign} range={range}>
       <section className="band overview-band">
@@ -301,6 +331,7 @@ export default async function DashboardPage({ searchParams }) {
           startAction={startScraperRun}
           runs={data.scraperRuns}
           commandAction={commandRun}
+          extendAction={extendRun}
           recentEvents={data.recentEvents}
           campaign={campaign}
         />
@@ -363,7 +394,7 @@ async function cloudStatusForRun(run) {
   return getCloudRunOperationStatus({ operationName: run.cloud_operation_name });
 }
 
-function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaign }) {
+function ScraperCenter({ startAction, runs, commandAction, extendAction, recentEvents, campaign }) {
   return (
     <section className="band scraper-center">
       <div className="scraper-center-section">
@@ -422,7 +453,7 @@ function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaig
                     {run.pending_commands?.length ? <small>pending command: {run.pending_commands.join(', ')}</small> : null}
                     {run.error ? <small className="run-error">{run.error}</small> : null}
                   </div>
-                  {canCommandRun(run) ? (
+                  {canCommandRun(run) || canExtendRun(run) ? (
                     <div className="run-actions">
                       {canPauseRun(run) ? (
                         <RunCommandButton action={commandAction} runType="scraper" runId={run.id} command="pause" />
@@ -432,6 +463,9 @@ function ScraperCenter({ startAction, runs, commandAction, recentEvents, campaig
                       ) : null}
                       {canStopRun(run) ? (
                         <RunCommandButton action={commandAction} runType="scraper" runId={run.id} command="stop" />
+                      ) : null}
+                      {canExtendRun(run) ? (
+                        <ExtendRunForm action={extendAction} runId={run.id} />
                       ) : null}
                     </div>
                   ) : null}
@@ -736,14 +770,26 @@ function RunCommandButton({ action, runType, runId, command }) {
   );
 }
 
+function ExtendRunForm({ action, runId }) {
+  return (
+    <form action={action}>
+      <input type="hidden" name="runId" value={runId} />
+      <input name="addAccepted" placeholder="+500" style={{ width: '64px' }} />
+      <button type="submit" className="secondary-button">extend</button>
+    </form>
+  );
+}
+
 function RunHealth({ run }) {
   const seconds = Number(run.seconds_since_update || 0);
   let tone = 'neutral';
   let label = `updated ${relativeDuration(seconds)} ago`;
 
   if (run.status === 'requested') {
-    tone = Number(run.age_seconds || 0) > STALE_RUN_SECONDS ? 'bad' : 'warn';
-    label = `waiting for worker ${relativeDuration(run.age_seconds)} ago`;
+    // seconds_since_update, not age: an extended run keeps its old created_at
+    // but was re-requested just now.
+    tone = seconds > STALE_RUN_SECONDS ? 'bad' : 'warn';
+    label = `waiting for worker ${relativeDuration(seconds)} ago`;
   } else if (['running', 'pause_requested', 'stop_requested'].includes(run.status) && seconds > STALE_RUN_SECONDS) {
     tone = 'bad';
     label = `stale ${relativeDuration(seconds)} ago`;
@@ -1358,6 +1404,10 @@ function canResumeRun(run) {
 
 function canStopRun(run) {
   return ['requested', 'running', 'pause_requested', 'paused'].includes(run.status) && !run.pending_commands?.includes('stop');
+}
+
+function canExtendRun(run) {
+  return ['completed', 'stopped', 'failed'].includes(run.status) && !run.pending_commands?.length;
 }
 
 function displayRunStatus(run) {

@@ -80,6 +80,17 @@ export function annotateFollowingCandidateForPrefilter({ candidate, config }) {
   };
 }
 
+// Cheap-prefilter classification for a following-list candidate that has been
+// annotated by annotateFollowingCandidateForPrefilter. Returns the seen status
+// the candidate should be recorded with.
+export function classifyDiscoveredCandidate({ candidate, config }) {
+  if (candidate.isPrivate === true) return 'filtered_private';
+  if (config.instagramRequireVerified && candidate.isVerified !== true) return 'filtered_unverified';
+  if (isKnownOutsideFollowerRange({ candidate, config })) return 'filtered_followers';
+  if (candidate.hardNo === true) return 'filtered_hard_no';
+  return 'queued';
+}
+
 export function isKnownOutsideFollowerRange({ candidate, config }) {
   if (!config.instagramFollowingPrefilter || !Number.isFinite(candidate.followersCount)) {
     return false;

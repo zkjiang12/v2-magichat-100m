@@ -138,6 +138,44 @@ data/evaluations/
 data/evaluations.jsonl
 ```
 
+## Campaign-Wide Dedup (`campaign_seen`)
+
+Every handle a campaign discovers is recorded once in the `campaign_seen` table
+(`primary key (campaign, handle)`). The crawler hydrates its in-memory seen map
+from this table at claim time, so no handle is ever scraped or scored twice
+within a campaign — across sequential runs, concurrent runs, and resumes.
+
+Retry-eligible exceptions: handles that previously `failed`, handles marked
+`cap_skipped` (scored accept-worthy but the run's accepted cap was already
+reached), and handles left `queued` by a run that is now completed, stopped,
+failed, or deleted — any later run adopts those instead of stranding them.
+
+The run's own seen map is no longer stored inside `scraper_runs.state`. The
+migration backfills `campaign_seen` from all existing runs' state blobs:
+
+```bash
+psql "$DATABASE_URL" -f ../sender-2/sql/migrations/014_add_campaign_seen.sql
+```
+
+Workers also heartbeat `scraper_runs.updated_at` every 30 seconds; a run whose
+heartbeat has been quiet for 10+ minutes is considered abandoned and can be
+re-claimed (the scheduled `worker:claim` does this automatically).
+
+This makes multiple runs per campaign safe and useful: start several runs with
+wildly different seed handles to cover more of the target distribution — each
+run explores its own corner of the graph and they share one campaign-wide
+memory, so overlap costs nothing.
+
+Two related behaviors:
+
+- Claiming a run by `--run-id` only succeeds when the run is `requested` or
+  `paused` (or looks abandoned: `running` with no state update for 10+
+  minutes), so a dashboard trigger and the scheduled `worker:claim` cannot
+  both process the same run. A worker that loses the race exits cleanly.
+- Completed, stopped, or failed runs can be extended from the dashboard
+  ("extend" raises `max_accepted` and re-requests the run); the crawler
+  continues from the saved frontier instead of starting over.
+
 ## Dashboard
 
 Use the Postgres-backed app in `../dashborad`. The old local JSON-state dashboard is no longer the control surface.

@@ -69,6 +69,29 @@ export async function createScraperRun({
   return result.rows[0];
 }
 
+export async function extendScraperRun({ campaign, runId, addAccepted }) {
+  if (!isUuid(runId)) throw new Error('Invalid run id');
+  const amount = Number(addAccepted);
+  if (!Number.isInteger(amount) || amount < 1) throw new Error('Invalid extend amount');
+
+  const result = await query(
+    `
+      update scraper_runs
+      set max_accepted = max_accepted + $3,
+          status = 'requested',
+          error = null,
+          completed_at = null,
+          updated_at = now()
+      where id = $1
+        and campaign = $2
+        and status in ('completed', 'stopped', 'failed')
+      returning id
+    `,
+    [runId, campaign, amount],
+  );
+  return result.rows[0] || null;
+}
+
 export async function recordScraperCloudTrigger({ runId, operationName, target, error }) {
   await query(
     `

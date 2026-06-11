@@ -156,6 +156,17 @@ create table if not exists campaign_notes (
   unique (creator_id, campaign)
 );
 
+create table if not exists campaign_seen (
+  campaign text not null,
+  handle text not null,
+  status text not null,
+  source_seed text,
+  run_id uuid,
+  discovered_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (campaign, handle)
+);
+
 create table if not exists scraper_runs (
   id uuid primary key default gen_random_uuid(),
   campaign text not null default 'day_in_life_creators',
@@ -291,6 +302,7 @@ alter table send_attempts enable row level security;
 alter table scrape_events enable row level security;
 alter table cost_events enable row level security;
 alter table campaign_notes enable row level security;
+alter table campaign_seen enable row level security;
 alter table scraper_runs enable row level security;
 alter table sender_runs enable row level security;
 alter table run_commands enable row level security;

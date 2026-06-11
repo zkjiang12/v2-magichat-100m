@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 
 import { resolveCampaign } from '../../../lib/campaigns';
 import { getCreatorDetail, requeueCreatorSend, saveCreatorNote } from '../../../lib/queries';
+import Nav from '../../components/Nav';
+import PendingButton from '../../components/PendingButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,14 +39,14 @@ export default async function CreatorDetailPage({ params, searchParams }) {
 
   return (
     <>
-      <header className="topbar detail-header">
-        <div>
-          <h1>@{creator.handle}</h1>
-          <p>{campaign}</p>
-        </div>
-      </header>
+      <Nav
+        title={`@${creator.handle}`}
+        subtitle={campaign}
+        campaign={campaign}
+        showCampaignTabs={false}
+      />
       <main>
-        <Link href={`/?campaign=${campaign}`}>Back to dashboard</Link>
+        <Link href={`/?campaign=${campaign}`}>← Back to dashboard</Link>
 
         <section className="split detail-split">
           <section className="panel">
@@ -67,13 +69,13 @@ export default async function CreatorDetailPage({ params, searchParams }) {
             <h2>Note</h2>
             <form action={saveNote} className="run-form">
               <textarea name="note" defaultValue={creator.note || ''} />
-              <button type="submit">Save note</button>
+              <PendingButton pendingText="Saving…">Save note</PendingButton>
             </form>
             {canRequeue ? (
               <form action={requeueSend} className="run-form">
-                <button type="submit" className="secondary-button">
+                <PendingButton className="secondary-button" pendingText="Requeuing…">
                   Requeue DM (currently {creator.queue_status})
-                </button>
+                </PendingButton>
               </form>
             ) : null}
           </section>

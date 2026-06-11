@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 
 import { CAMPAIGNS, resolveCampaign } from '../../../lib/campaigns';
 import { getSenderAccountDetail, updateSenderAccountSettings } from '../../../lib/queries';
+import Nav from '../../components/Nav';
+import PendingButton from '../../components/PendingButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,14 +34,14 @@ export default async function SenderAccountPage({ params, searchParams }) {
 
   return (
     <>
-      <header className="topbar detail-header">
-        <div>
-          <h1>@{account.username}</h1>
-          <p>sender account | {account.status}</p>
-        </div>
-      </header>
+      <Nav
+        title={`@${account.username}`}
+        subtitle={`sender account | ${account.status}`}
+        campaign={campaign}
+        showCampaignTabs={false}
+      />
       <main>
-        <Link href={`/?campaign=${campaign}`}>Back to dashboard</Link>
+        <Link href={`/?campaign=${campaign}`}>← Back to dashboard</Link>
 
         <section className="split detail-split">
           <section className="panel">
@@ -89,7 +91,7 @@ export default async function SenderAccountPage({ params, searchParams }) {
                   ))}
                 </select>
               </label>
-              <button type="submit">Save</button>
+              <PendingButton pendingText="Saving…">Save</PendingButton>
             </form>
           </section>
         </section>

@@ -1,48 +1,79 @@
+import { cache } from 'react';
+
 import { query } from './db';
 
-export async function getDashboardData({ campaign, range = '24h' }) {
-  const cfg = bucketConfig(range);
-  const scrapeTotals = await queryScrapeTotals(campaign);
-  const scrapeLastHour = await queryScrapeLastHour(campaign);
-  const scrapeHourly = await queryScrapeHourly(campaign, cfg);
-  const costTotals = await queryCostTotals(campaign);
-  const costLastHour = await queryCostLastHour(campaign);
-  const costHourly = await queryCostHourly(campaign, cfg);
-  const sendQueueTotals = await querySendQueueTotals(campaign);
-  const sendAttemptTotals = await querySendAttemptTotals(campaign);
-  const sendAttemptLastHour = await querySendAttemptLastHour(campaign);
-  const sendAttemptHourly = await querySendAttemptHourly(campaign, cfg);
-  const freshness = await queryFreshness(campaign);
-  const scraperRuns = await queryScraperRuns(campaign);
-  const senderRuns = await querySenderRuns(campaign);
-  const senderAccounts = await querySenderAccounts();
-  const campaignSettings = await queryCampaignSettings(campaign);
-  const runObservability = await queryRunObservability(campaign);
-  const acceptedCreators = await queryCreators(campaign);
-  const recentEvents = await queryRecentEvents(campaign);
-  const instantlyTotals = await queryInstantlyTotals(campaign);
+// Section-scoped fetchers so the page streams each band as soon as its data
+// is ready. Queries within a section run in parallel; `cache()` dedupes the
+// queries shared across sections within a single render pass.
 
-  return {
+export async function getOverviewData({ campaign, range = '24h' }) {
+  const cfg = bucketConfig(range);
+  const [
     scrapeTotals,
-    scrapeLastHour,
     scrapeHourly,
     costTotals,
-    costLastHour,
     costHourly,
     sendQueueTotals,
     sendAttemptTotals,
-    sendAttemptLastHour,
     sendAttemptHourly,
-    freshness,
+  ] = await Promise.all([
+    queryScrapeTotals(campaign),
+    queryScrapeHourly(campaign, cfg),
+    queryCostTotals(campaign),
+    queryCostHourly(campaign, cfg),
+    querySendQueueTotals(campaign),
+    querySendAttemptTotals(campaign),
+    querySendAttemptHourly(campaign, cfg),
+  ]);
+
+  return {
+    scrapeTotals,
+    scrapeHourly,
+    costTotals,
+    costHourly,
+    sendQueueTotals,
+    sendAttemptTotals,
+    sendAttemptHourly,
+  };
+}
+
+export async function getRunsData({ campaign }) {
+  const [
     scraperRuns,
     senderRuns,
+    recentEvents,
+    sendQueueTotals,
     senderAccounts,
     campaignSettings,
-    runObservability,
-    acceptedCreators,
+  ] = await Promise.all([
+    queryScraperRuns(campaign),
+    querySenderRuns(campaign),
+    queryRecentEvents(campaign),
+    querySendQueueTotals(campaign),
+    querySenderAccounts(),
+    queryCampaignSettings(campaign),
+  ]);
+
+  return {
+    scraperRuns,
+    senderRuns,
     recentEvents,
-    instantlyTotals,
+    sendQueueTotals,
+    senderAccounts,
+    campaignSettings,
   };
+}
+
+export async function getAccountsData({ campaign }) {
+  const [senderAccounts, instantlyTotals] = await Promise.all([
+    querySenderAccounts(),
+    queryInstantlyTotals(campaign),
+  ]);
+  return { senderAccounts, instantlyTotals };
+}
+
+export async function getCreatorsData({ campaign }) {
+  return { acceptedCreators: await queryCreators(campaign) };
 }
 
 export async function createScraperRun({
@@ -483,24 +514,6 @@ async function queryScrapeTotals(campaign) {
   return normalizeCounts(result.rows[0]);
 }
 
-async function queryScrapeLastHour(campaign) {
-  const result = await query(
-    `
-      select
-        count(*) filter (where event_type = 'seen')::int as seen,
-        count(*) filter (where event_type = 'processed')::int as processed,
-        count(*) filter (where event_type = 'accepted')::int as accepted,
-        count(*) filter (where event_type = 'rejected')::int as rejected,
-        count(*) filter (where event_type = 'failed')::int as failed
-      from scrape_events
-      where campaign = $1
-        and event_at >= now() - interval '1 hour'
-    `,
-    [campaign],
-  );
-  return normalizeCounts(result.rows[0]);
-}
-
 function bucketConfig(range) {
   if (range === '7d') {
     return { trunc: 'day', step: "interval '1 day'", lookback: "interval '6 days'" };
@@ -520,18 +533,24 @@ async function queryScrapeHourly(campaign, cfg = bucketConfig('24h')) {
           date_trunc('${cfg.trunc}', now()),
           ${cfg.step}
         ) as hour
+      ),
+      ev as (
+        -- range-bound before bucketing so the (campaign, event_at) index is
+        -- used instead of date_trunc-scanning every event for the campaign
+        select date_trunc('${cfg.trunc}', event_at) as hour, event_type
+        from scrape_events
+        where campaign = $1
+          and event_at >= date_trunc('${cfg.trunc}', now()) - ${cfg.lookback}
       )
       select
         b.hour,
-        count(se.*) filter (where se.event_type = 'seen')::int as seen,
-        count(se.*) filter (where se.event_type = 'processed')::int as processed,
-        count(se.*) filter (where se.event_type = 'accepted')::int as accepted,
-        count(se.*) filter (where se.event_type = 'rejected')::int as rejected,
-        count(se.*) filter (where se.event_type = 'failed')::int as failed
+        count(ev.*) filter (where ev.event_type = 'seen')::int as seen,
+        count(ev.*) filter (where ev.event_type = 'processed')::int as processed,
+        count(ev.*) filter (where ev.event_type = 'accepted')::int as accepted,
+        count(ev.*) filter (where ev.event_type = 'rejected')::int as rejected,
+        count(ev.*) filter (where ev.event_type = 'failed')::int as failed
       from buckets b
-      left join scrape_events se
-        on date_trunc('${cfg.trunc}', se.event_at) = b.hour
-        and se.campaign = $1
+      left join ev on ev.hour = b.hour
       group by b.hour
       order by b.hour
     `,
@@ -548,14 +567,6 @@ async function queryScrapeHourly(campaign, cfg = bucketConfig('24h')) {
 }
 
 async function queryCostTotals(campaign) {
-  return queryCost(campaign, false);
-}
-
-async function queryCostLastHour(campaign) {
-  return queryCost(campaign, true);
-}
-
-async function queryCost(campaign, lastHour) {
   const result = await query(
     `
       select
@@ -566,9 +577,8 @@ async function queryCost(campaign, lastHour) {
         coalesce(sum(accepted_creators) filter (where provider = 'combined'), 0)::int as accepted_creators
       from cost_events
       where campaign = $1
-        and ($2::boolean = false or event_at >= now() - interval '1 hour')
     `,
-    [campaign, lastHour],
+    [campaign],
   );
   const row = result.rows[0] || {};
   return {
@@ -589,15 +599,19 @@ async function queryCostHourly(campaign, cfg = bucketConfig('24h')) {
           date_trunc('${cfg.trunc}', now()),
           ${cfg.step}
         ) as hour
+      ),
+      ev as (
+        select date_trunc('${cfg.trunc}', event_at) as hour, provider, amount_usd
+        from cost_events
+        where campaign = $1
+          and event_at >= date_trunc('${cfg.trunc}', now()) - ${cfg.lookback}
       )
       select
         b.hour,
-        coalesce(sum(ce.amount_usd) filter (where ce.provider = 'apify'), 0)::float as apify_usd,
-        coalesce(sum(ce.amount_usd) filter (where ce.provider = 'openai'), 0)::float as openai_usd
+        coalesce(sum(ev.amount_usd) filter (where ev.provider = 'apify'), 0)::float as apify_usd,
+        coalesce(sum(ev.amount_usd) filter (where ev.provider = 'openai'), 0)::float as openai_usd
       from buckets b
-      left join cost_events ce
-        on date_trunc('${cfg.trunc}', ce.event_at) = b.hour
-        and ce.campaign = $1
+      left join ev on ev.hour = b.hour
       group by b.hour
       order by b.hour
     `,
@@ -610,7 +624,7 @@ async function queryCostHourly(campaign, cfg = bucketConfig('24h')) {
   }));
 }
 
-async function querySendQueueTotals(campaign) {
+const querySendQueueTotals = cache(async (campaign) => {
   const result = await query(
     `
       select status, count(*)::int as count
@@ -621,7 +635,7 @@ async function querySendQueueTotals(campaign) {
     [campaign],
   );
   return rowsToCounts(result.rows);
-}
+});
 
 async function querySendAttemptTotals(campaign) {
   const result = await query(
@@ -630,21 +644,6 @@ async function querySendAttemptTotals(campaign) {
       from send_attempts sa
       join send_queue sq on sq.id = sa.send_queue_id
       where sq.campaign = $1
-      group by sa.status
-    `,
-    [campaign],
-  );
-  return rowsToCounts(result.rows);
-}
-
-async function querySendAttemptLastHour(campaign) {
-  const result = await query(
-    `
-      select sa.status, count(*)::int as count
-      from send_attempts sa
-      join send_queue sq on sq.id = sa.send_queue_id
-      where sq.campaign = $1
-        and sa.created_at >= now() - interval '1 hour'
       group by sa.status
     `,
     [campaign],
@@ -661,20 +660,22 @@ async function querySendAttemptHourly(campaign, cfg = bucketConfig('24h')) {
           date_trunc('${cfg.trunc}', now()),
           ${cfg.step}
         ) as hour
+      ),
+      ev as (
+        select date_trunc('${cfg.trunc}', sa.created_at) as hour, sa.status
+        from send_attempts sa
+        join send_queue sq on sq.id = sa.send_queue_id
+        where sq.campaign = $1
+          and sa.created_at >= date_trunc('${cfg.trunc}', now()) - ${cfg.lookback}
       )
       select
         b.hour,
-        count(sa.*) filter (where sa.status = 'sent')::int as sent,
-        count(sa.*) filter (where sa.status in ('failed_retryable', 'failed_final'))::int as failed,
-        count(sa.*) filter (where sa.status = 'skipped')::int as skipped,
-        count(sa.*) filter (where sa.status = 'dry_run')::int as dry_run
+        count(ev.*) filter (where ev.status = 'sent')::int as sent,
+        count(ev.*) filter (where ev.status in ('failed_retryable', 'failed_final'))::int as failed,
+        count(ev.*) filter (where ev.status = 'skipped')::int as skipped,
+        count(ev.*) filter (where ev.status = 'dry_run')::int as dry_run
       from buckets b
-      left join send_attempts sa
-        on date_trunc('${cfg.trunc}', sa.created_at) = b.hour
-      left join send_queue sq
-        on sq.id = sa.send_queue_id
-        and sq.campaign = $1
-      where sa.id is null or sq.campaign = $1
+      left join ev on ev.hour = b.hour
       group by b.hour
       order by b.hour
     `,
@@ -687,37 +688,6 @@ async function querySendAttemptHourly(campaign, cfg = bucketConfig('24h')) {
     skipped: Number(row.skipped || 0),
     dry_run: Number(row.dry_run || 0),
   }));
-}
-
-async function queryFreshness(campaign) {
-  const result = await query(
-    `
-      select
-        (select max(event_at) from scrape_events where campaign = $1) as last_scrape_event_at,
-        (select max(event_at) from scrape_events where campaign = $1 and event_type = 'accepted') as last_accepted_at,
-        (
-          select max(sa.created_at)
-          from send_attempts sa
-          join send_queue sq on sq.id = sa.send_queue_id
-          where sq.campaign = $1
-        ) as last_send_attempt_at,
-        (
-          select count(*)::int
-          from send_queue
-          where campaign = $1
-            and status = 'claimed'
-            and claimed_at < now() - interval '15 minutes'
-        ) as stuck_claimed_sends,
-        (
-          select count(*)::int
-          from send_queue
-          where campaign = $1
-            and status = 'failed_retryable'
-        ) as retryable_failures
-    `,
-    [campaign],
-  );
-  return result.rows[0] || {};
 }
 
 async function queryScraperRuns(campaign) {
@@ -841,49 +811,7 @@ async function querySenderRuns(campaign) {
   return result.rows;
 }
 
-async function queryRunObservability(campaign) {
-  const result = await query(
-    `
-      select
-        (select count(*)::int from scraper_runs where campaign = $1 and status = 'requested') as scraper_waiting,
-        (select count(*)::int from sender_runs where campaign = $1 and status = 'requested') as sender_waiting,
-        (
-          select count(*)::int
-          from scraper_runs
-          where campaign = $1
-            and status in ('running', 'pause_requested', 'stop_requested')
-            and updated_at < now() - interval '5 minutes'
-        ) as scraper_stale,
-        (
-          select count(*)::int
-          from sender_runs
-          where campaign = $1
-            and status in ('running', 'pause_requested', 'stop_requested')
-            and updated_at < now() - interval '5 minutes'
-        ) as sender_stale,
-        (
-          select count(*)::int
-          from run_commands
-          where campaign = $1
-            and status = 'pending'
-        ) as pending_commands,
-        (
-          select max(updated_at)
-          from scraper_runs
-          where campaign = $1
-        ) as last_scraper_run_update_at,
-        (
-          select max(updated_at)
-          from sender_runs
-          where campaign = $1
-        ) as last_sender_run_update_at
-    `,
-    [campaign],
-  );
-  return result.rows[0] || {};
-}
-
-async function querySenderAccounts() {
+const querySenderAccounts = cache(async () => {
   const result = await query(
     `
       select
@@ -907,7 +835,7 @@ async function querySenderAccounts() {
     `,
   );
   return result.rows;
-}
+});
 
 async function queryCampaignSettings(campaign) {
   const result = await query(
@@ -948,6 +876,7 @@ async function queryCreators(campaign) {
       where ce.campaign = $1
         and ce.fit_score between 1 and 4
       order by ce.evaluated_at desc nulls last, ce.created_at desc
+      limit 400
     `,
     [campaign],
   );

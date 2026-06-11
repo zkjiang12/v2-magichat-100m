@@ -1,25 +1,28 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { revalidatePath } from 'next/cache';
 
 import HourlyBarChartBody from './HourlyBarChartBody';
+import AccountManageForm from './components/AccountManageForm';
+import AutoRefresh from './components/AutoRefresh';
+import Nav from './components/Nav';
+import {
+  CommandButton,
+  ExtendRunForm,
+  RequeueAllButton,
+  RetryFailedButton,
+  RunAgainButton,
+} from './components/RunControls';
+import { ScraperRunForm, SenderRunForm } from './components/RunForms';
+import { BandSkeleton, OverviewSkeleton, RunCentersSkeleton } from './components/Skeletons';
+import { RangeTabs } from './components/Tabs';
 
 import { CAMPAIGNS, resolveCampaign } from '../lib/campaigns';
+import { getCloudRunOperationStatus } from '../lib/cloud-run';
 import {
-  getCloudRunOperationStatus,
-  triggerScraperCloudRunJob,
-  triggerSenderCloudRunJob,
-} from '../lib/cloud-run';
-import {
-  createRunCommand,
-  createScraperRun,
-  createSenderRun,
-  extendScraperRun,
-  getDashboardData,
-  recordScraperCloudTrigger,
-  recordSenderCloudTrigger,
-  requeueCampaignFailures,
-  requeueRunFailures,
-  updateSenderAccountSettings,
+  getAccountsData,
+  getCreatorsData,
+  getOverviewData,
+  getRunsData,
 } from '../lib/queries';
 
 export const dynamic = 'force-dynamic';
@@ -30,228 +33,97 @@ const RANGE_OPTIONS = [
   { value: '7d', label: '7d', bucket: 'day' },
   { value: '30d', label: '30d', bucket: 'day' },
 ];
+// Statuses where a worker may still be doing something — the only runs worth
+// polling Cloud Run about, and the signal for fast auto-refresh.
+const ACTIVE_RUN_STATUSES = ['requested', 'running', 'pause_requested', 'stop_requested'];
 
-export default async function DashboardPage({ searchParams }) {
+export default function DashboardPage({ searchParams }) {
   const campaign = resolveCampaign(searchParams?.campaign);
   const rangeParam = searchParams?.range;
   const rangeOption = RANGE_OPTIONS.find((opt) => opt.value === rangeParam) || RANGE_OPTIONS[0];
   const range = rangeOption.value;
   const bucketKind = rangeOption.bucket;
-  let data;
-  let error = null;
-
-  try {
-    data = await getDashboardData({ campaign, range });
-    data = await attachCloudStatuses(data);
-  } catch (caught) {
-    error = caught;
-  }
-
-  if (error) {
-    return (
-      <Shell campaign={campaign}>
-        <section className="empty-state">
-          <h2>Dashboard is not connected yet</h2>
-          <p>{error.message}</p>
-          <p>Set `DATABASE_URL` and run the dashboard/control migrations.</p>
-        </section>
-      </Shell>
-    );
-  }
-
-  const scrapeTotals = data.scrapeTotals;
-  const scrapeLastHour = data.scrapeLastHour;
-  const queue = data.sendQueueTotals;
-  const sendTotals = data.sendAttemptTotals;
-  const sendHour = data.sendAttemptLastHour;
-  const costTotals = withCostRates(data.costTotals, scrapeTotals);
-  const costHour = withCostRates(data.costLastHour, scrapeLastHour);
-
-  async function startScraperRun(formData) {
-    'use server';
-    const seedHandles = parseHandles(String(formData.get('seedHandles') || ''));
-    if (seedHandles.length === 0) return;
-
-    const run = await createScraperRun({
-      campaign,
-      seedHandles,
-      maxAccepted: positiveInt(formData.get('maxAccepted'), 1000),
-      followingLimit: Math.max(50, boundedPositiveInt(formData.get('followingLimit'), 2000, 2000)),
-      qualificationWorkers: boundedPositiveInt(formData.get('qualificationWorkers'), 32, 32),
-    });
-
-    try {
-      const trigger = await triggerScraperCloudRunJob({ runId: run.id, campaign });
-      if (trigger) {
-        await recordScraperCloudTrigger({
-          runId: run.id,
-          operationName: trigger.name,
-          target: trigger.target,
-        });
-      }
-    } catch (caught) {
-      await recordScraperCloudTrigger({
-        runId: run.id,
-        target: 'cloud_run_job',
-        error: caught.message,
-      });
-      throw caught;
-    }
-
-    revalidatePath('/');
-  }
-
-  async function startSenderRun(formData) {
-    'use server';
-    const accountUsernames = [...new Set(
-      formData.getAll('accountUsernames')
-        .map((value) => String(value).trim().replace(/^@/, '').toLowerCase())
-        .filter(Boolean),
-    )];
-    const messageTemplate = String(formData.get('messageTemplate') || '').trim();
-    const run = await createSenderRun({
-      campaign,
-      accountUsernames,
-      maxSends: boundedPositiveInt(formData.get('maxSends'), 25, 100),
-      messageTemplate: messageTemplate || null,
-    });
-
-    try {
-      const trigger = await triggerSenderCloudRunJob({ runId: run.id, campaign });
-      if (trigger) {
-        await recordSenderCloudTrigger({
-          runId: run.id,
-          operationName: trigger.name,
-          target: trigger.target,
-        });
-      }
-    } catch (caught) {
-      await recordSenderCloudTrigger({
-        runId: run.id,
-        target: 'cloud_run_job',
-        error: caught.message,
-      });
-      throw caught;
-    }
-
-    revalidatePath('/');
-  }
-
-  async function updateSenderAccount(formData) {
-    'use server';
-    const username = String(formData.get('username') || '').trim();
-    if (!username) return;
-    const selectedCampaign = String(formData.get('campaign') || '');
-    const selectedStatus = String(formData.get('status') || '');
-    const limitValue = Number.parseInt(String(formData.get('dailySendLimit') || ''), 10);
-    await updateSenderAccountSettings({
-      username,
-      status: ['active', 'paused', 'blocked'].includes(selectedStatus) ? selectedStatus : null,
-      campaign: CAMPAIGNS.includes(selectedCampaign) ? selectedCampaign : null,
-      dailySendLimit: Number.isFinite(limitValue) && limitValue >= 0 ? Math.min(limitValue, 500) : null,
-    });
-    revalidatePath('/');
-  }
-
-  async function commandRun(formData) {
-    'use server';
-    await createRunCommand({
-      campaign,
-      runType: String(formData.get('runType')),
-      runId: String(formData.get('runId')),
-      command: String(formData.get('command')),
-    });
-    revalidatePath('/');
-  }
-
-  async function retryRunFailures(formData) {
-    'use server';
-    await requeueRunFailures({
-      runId: String(formData.get('runId') || ''),
-      campaign,
-    });
-    revalidatePath('/');
-  }
-
-  async function requeueAllFailures() {
-    'use server';
-    await requeueCampaignFailures({ campaign });
-    revalidatePath('/');
-  }
-
-  async function extendRun(formData) {
-    'use server';
-    const runId = String(formData.get('runId'));
-    const addAccepted = positiveInt(formData.get('addAccepted'), 500);
-
-    const extended = await extendScraperRun({ campaign, runId, addAccepted });
-    if (!extended) return;
-
-    try {
-      const trigger = await triggerScraperCloudRunJob({ runId, campaign });
-      if (trigger) {
-        await recordScraperCloudTrigger({
-          runId,
-          operationName: trigger.name,
-          target: trigger.target,
-        });
-      }
-    } catch (caught) {
-      await recordScraperCloudTrigger({
-        runId,
-        target: 'cloud_run_job',
-        error: caught.message,
-      });
-      throw caught;
-    }
-
-    revalidatePath('/');
-  }
 
   return (
     <Shell campaign={campaign} range={range}>
       <section className="band overview-band">
         <div className="band-header overview-header">
-          <RangeTabs current={range} campaign={campaign} />
-        </div>
-        <div className="overview-grid">
-          <Donut
-            centerLabel="Seen"
-            total={scrapeTotals.seen}
-            segments={[
-              { key: 'accepted', label: 'Accepted', value: scrapeTotals.accepted, color: 'var(--green)' },
-              { key: 'rejected', label: 'Rejected', value: scrapeTotals.rejected, color: 'var(--red)' },
-              {
-                key: 'pending',
-                label: 'Pending',
-                value: pendingValue(scrapeTotals.seen, scrapeTotals.accepted, scrapeTotals.rejected),
-                color: '#3f3f46',
-              },
-            ]}
-          />
-          <Donut
-            centerLabel="DMs"
-            total={sendDmTotal(queue, sendTotals)}
-            segments={[
-              { key: 'sent', label: 'Sent DMs', value: queue.sent || sendTotals.sent || 0, color: 'var(--green)' },
-              {
-                key: 'failed',
-                label: 'Failed Sends',
-                value: (queue.failed_retryable || 0) + (queue.failed_final || 0),
-                color: 'var(--red)',
-              },
-              {
-                key: 'queued',
-                label: 'Queued Sends',
-                value: queuedPending(queue, sendTotals),
-                color: '#3f3f46',
-              },
-            ]}
+          <RangeTabs
+            current={range}
+            campaign={campaign}
+            options={RANGE_OPTIONS.map(({ value, label }) => ({ value, label }))}
           />
         </div>
-        <div className="split chart-split">
-          <HourlyBarChart
-            title="Scraping"
+        <Suspense fallback={<OverviewSkeleton />}>
+          <OverviewSection campaign={campaign} range={range} bucketKind={bucketKind} />
+        </Suspense>
+      </section>
+
+      <Suspense fallback={<RunCentersSkeleton />}>
+        <RunCentersSection campaign={campaign} />
+      </Suspense>
+
+      <Suspense fallback={<BandSkeleton height={260} />}>
+        <AccountsSection campaign={campaign} />
+      </Suspense>
+
+      <Suspense fallback={<BandSkeleton height={320} />}>
+        <CreatorsSection campaign={campaign} />
+      </Suspense>
+
+      <EvalInstructions />
+    </Shell>
+  );
+}
+
+async function OverviewSection({ campaign, range, bucketKind }) {
+  const data = await getOverviewData({ campaign, range });
+
+  const scrapeTotals = data.scrapeTotals;
+  const queue = data.sendQueueTotals;
+  const sendTotals = data.sendAttemptTotals;
+  const costTotals = withCostRates(data.costTotals, scrapeTotals);
+
+  return (
+    <>
+      <div className="overview-grid">
+        <Donut
+          centerLabel="Seen"
+          total={scrapeTotals.seen}
+          segments={[
+            { key: 'accepted', label: 'Accepted', value: scrapeTotals.accepted, color: 'var(--green)' },
+            { key: 'rejected', label: 'Rejected', value: scrapeTotals.rejected, color: 'var(--red)' },
+            {
+              key: 'pending',
+              label: 'Pending',
+              value: pendingValue(scrapeTotals.seen, scrapeTotals.accepted, scrapeTotals.rejected),
+              color: '#3f3f46',
+            },
+          ]}
+        />
+        <Donut
+          centerLabel="DMs"
+          total={sendDmTotal(queue, sendTotals)}
+          segments={[
+            { key: 'sent', label: 'Sent DMs', value: queue.sent || sendTotals.sent || 0, color: 'var(--green)' },
+            {
+              key: 'failed',
+              label: 'Failed Sends',
+              value: (queue.failed_retryable || 0) + (queue.failed_final || 0),
+              color: 'var(--red)',
+            },
+            {
+              key: 'queued',
+              label: 'Queued Sends',
+              value: queuedPending(queue, sendTotals),
+              color: '#3f3f46',
+            },
+          ]}
+        />
+      </div>
+      <div className="split chart-split">
+        <HourlyBarChart
+          title="Scraping"
           unit="profiles"
           bucketKind={bucketKind}
           data={data.scrapeHourly}
@@ -323,54 +195,72 @@ export default async function DashboardPage({ searchParams }) {
             ['Skipped', queue.skipped || 0],
           ]}
         />
-        </div>
-      </section>
+      </div>
+    </>
+  );
+}
 
+async function RunCentersSection({ campaign }) {
+  const data = await getRunsData({ campaign });
+  const [scraperRuns, senderRuns] = await Promise.all([
+    attachCloudStatusesToRuns(data.scraperRuns),
+    attachCloudStatusesToRuns(data.senderRuns),
+  ]);
+
+  const activeCount =
+    scraperRuns.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)).length +
+    senderRuns.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)).length;
+  const runsFingerprint = [
+    ...scraperRuns.map((run) => ({ id: run.id, kind: 'scraper', status: run.status })),
+    ...senderRuns.map((run) => ({ id: run.id, kind: 'sender', status: run.status })),
+  ];
+
+  return (
+    <>
+      <AutoRefresh
+        activeCount={activeCount}
+        titleProgress={buildTitleProgress(scraperRuns, senderRuns)}
+        runs={runsFingerprint}
+      />
       <div className="run-centers">
-        <ScraperCenter
-          startAction={startScraperRun}
-          runs={data.scraperRuns}
-          commandAction={commandRun}
-          extendAction={extendRun}
-          recentEvents={data.recentEvents}
-          campaign={campaign}
-        />
+        <ScraperCenter runs={scraperRuns} recentEvents={data.recentEvents} campaign={campaign} />
         <SenderCenter
-          startAction={startSenderRun}
-          runs={data.senderRuns}
-          commandAction={commandRun}
-          retryAction={retryRunFailures}
-          requeueAllAction={requeueAllFailures}
+          runs={senderRuns}
           queueTotals={data.sendQueueTotals}
           accounts={data.senderAccounts}
           campaign={campaign}
           campaignSettings={data.campaignSettings}
         />
       </div>
-
-      <SenderAccountsPanel
-        accounts={data.senderAccounts}
-        campaign={campaign}
-        updateAction={updateSenderAccount}
-      />
-
-      {data.instantlyTotals ? <InstantlyPanel totals={data.instantlyTotals} /> : null}
-      <CreatorKanbanBoard rows={data.acceptedCreators} />
-      <EvalInstructions />
-    </Shell>
+    </>
   );
 }
 
-async function attachCloudStatuses(data) {
-  const [scraperRuns, senderRuns] = await Promise.all([
-    attachCloudStatusesToRuns(data.scraperRuns),
-    attachCloudStatusesToRuns(data.senderRuns),
-  ]);
-  return {
-    ...data,
-    scraperRuns,
-    senderRuns,
-  };
+async function AccountsSection({ campaign }) {
+  const data = await getAccountsData({ campaign });
+  return (
+    <>
+      <SenderAccountsPanel accounts={data.senderAccounts} campaign={campaign} />
+      {data.instantlyTotals ? <InstantlyPanel totals={data.instantlyTotals} /> : null}
+    </>
+  );
+}
+
+async function CreatorsSection({ campaign }) {
+  const data = await getCreatorsData({ campaign });
+  return <CreatorKanbanBoard rows={data.acceptedCreators} />;
+}
+
+function buildTitleProgress(scraperRuns, senderRuns) {
+  const scraping = scraperRuns.find((run) => ['running', 'requested'].includes(run.status));
+  if (scraping) {
+    return `scrape ${formatNumber(scraping.counters?.accepted || 0)}/${formatNumber(scraping.max_accepted || 0)}`;
+  }
+  const sending = senderRuns.find((run) => ['running', 'requested'].includes(run.status));
+  if (sending) {
+    return `send ${formatNumber(sending.counters?.sent || 0)}/${formatNumber(sending.max_sends || 0)}`;
+  }
+  return null;
 }
 
 async function attachCloudStatusesToRuns(runs) {
@@ -391,35 +281,27 @@ async function cloudStatusForRun(run) {
   }
   if (!run.worker_target && !run.cloud_operation_name) return { status: 'not_triggered' };
   if (!run.cloud_operation_name) return { status: 'unknown' };
+  if (!ACTIVE_RUN_STATUSES.includes(run.status) && run.status !== 'paused') {
+    // The DB already says this run is over — no point polling Google about it.
+    return { status: 'finished' };
+  }
   return getCloudRunOperationStatus({ operationName: run.cloud_operation_name });
 }
 
-function ScraperCenter({ startAction, runs, commandAction, extendAction, recentEvents, campaign }) {
+function isRunInProgress(run) {
+  return ['running', 'requested', 'pause_requested'].includes(run.status);
+}
+
+function canRunAgain(run) {
+  return ['completed', 'stopped', 'failed'].includes(run.status);
+}
+
+function ScraperCenter({ runs, recentEvents, campaign }) {
   return (
     <section className="band scraper-center">
       <div className="scraper-center-section">
         <h3>Start Scraper Run</h3>
-        <form action={startAction} className="run-form">
-          <label>
-            <span>Seed handles</span>
-            <input name="seedHandles" placeholder="yestheory, drewbinsky" />
-          </label>
-          <div className="form-grid">
-            {[
-              ['maxAccepted', 'Max accepted', '1000'],
-              ['followingLimit', 'Following limit', '2000'],
-              ['qualificationWorkers', 'Workers', '32'],
-            ].map(([name, label, placeholder]) => (
-              <label key={name}>
-                <span>{label}</span>
-                <input name={name} placeholder={placeholder} />
-              </label>
-            ))}
-          </div>
-          <div className="form-actions">
-            <button type="submit">Create run</button>
-          </div>
-        </form>
+        <ScraperRunForm campaign={campaign} />
       </div>
 
       <div className="run-tabs">
@@ -446,6 +328,9 @@ function ScraperCenter({ startAction, runs, commandAction, extendAction, recentE
                     <RunHealth run={run} />
                     <CloudStatusBadge run={run} />
                     <span>{run.seed_handles?.join(', ')}</span>
+                    {isRunInProgress(run) ? (
+                      <RunProgress value={run.counters?.accepted} max={run.max_accepted} label="accepted" />
+                    ) : null}
                     <small>{shortId(run.id)} | updated {formatDate(run.updated_at)}</small>
                     <small>{formatRunTimeline(run)}</small>
                     <ScraperRunDetails run={run} />
@@ -453,19 +338,31 @@ function ScraperCenter({ startAction, runs, commandAction, extendAction, recentE
                     {run.pending_commands?.length ? <small>pending command: {run.pending_commands.join(', ')}</small> : null}
                     {run.error ? <small className="run-error">{run.error}</small> : null}
                   </div>
-                  {canCommandRun(run) || canExtendRun(run) ? (
+                  {canCommandRun(run) || canExtendRun(run) || canRunAgain(run) ? (
                     <div className="run-actions">
                       {canPauseRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="scraper" runId={run.id} command="pause" />
+                        <CommandButton campaign={campaign} runType="scraper" runId={run.id} command="pause" />
                       ) : null}
                       {canResumeRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="scraper" runId={run.id} command="resume" />
+                        <CommandButton campaign={campaign} runType="scraper" runId={run.id} command="resume" />
                       ) : null}
                       {canStopRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="scraper" runId={run.id} command="stop" />
+                        <CommandButton campaign={campaign} runType="scraper" runId={run.id} command="stop" />
                       ) : null}
                       {canExtendRun(run) ? (
-                        <ExtendRunForm action={extendAction} runId={run.id} />
+                        <ExtendRunForm campaign={campaign} runId={run.id} />
+                      ) : null}
+                      {canRunAgain(run) ? (
+                        <RunAgainButton
+                          kind="scraper"
+                          campaign={campaign}
+                          settings={{
+                            seedHandles: (run.seed_handles || []).join(', '),
+                            maxAccepted: run.max_accepted,
+                            followingLimit: run.following_limit,
+                            qualificationWorkers: run.qualification_workers,
+                          }}
+                        />
                       ) : null}
                     </div>
                   ) : null}
@@ -502,20 +399,16 @@ function ScraperCenter({ startAction, runs, commandAction, extendAction, recentE
   );
 }
 
-function SenderCenter({
-  startAction,
-  runs,
-  commandAction,
-  retryAction,
-  requeueAllAction,
-  queueTotals,
-  accounts,
-  campaign,
-  campaignSettings,
-}) {
-  const eligibleAccounts = (accounts || []).filter(
-    (account) => !account.campaign || account.campaign === campaign,
-  );
+function SenderCenter({ runs, queueTotals, accounts, campaign, campaignSettings }) {
+  const eligibleAccounts = (accounts || [])
+    .filter((account) => !account.campaign || account.campaign === campaign)
+    .map((account) => ({
+      username: account.username,
+      campaign: account.campaign,
+      status: account.status,
+      daily_send_limit: account.daily_send_limit,
+      sends_today: account.sends_today,
+    }));
   const campaignTemplate = campaignSettings?.message_template || '';
   const failedInQueue = Number(queueTotals?.failed_retryable || 0) + Number(queueTotals?.failed_final || 0);
 
@@ -523,44 +416,11 @@ function SenderCenter({
     <section className="band scraper-center">
       <div className="scraper-center-section">
         <h3>Start Sender Run</h3>
-        <form action={startAction} className="run-form">
-          <div>
-            <span>Send from</span>
-            <p className="field-hint">None checked = any eligible account for {campaign}.</p>
-            {eligibleAccounts.length === 0 ? (
-              <p className="muted-copy">No sender accounts are assigned to this campaign yet. Assign them in Sender Accounts below.</p>
-            ) : (
-              <div className="account-picker">
-                {eligibleAccounts.map((account) => (
-                  <label key={account.username} className="account-checkbox">
-                    <input type="checkbox" name="accountUsernames" value={account.username} />
-                    <span className="account-handle">@{account.username}</span>
-                    <span className="account-pill">{account.campaign ? account.campaign : 'shared'}</span>
-                    {account.status !== 'active' ? (
-                      <span className="account-pill warn">{account.status}</span>
-                    ) : null}
-                    <span className="account-usage">
-                      {account.sends_today || 0}/{account.daily_send_limit} today
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-          <label>
-            <span>Message for this run (blank = campaign template)</span>
-            <textarea name="messageTemplate" rows={3} defaultValue={campaignTemplate} placeholder="Hey {name}, ..." />
-          </label>
-          <div className="form-grid">
-            <label className="narrow-field">
-              <span>Max sends</span>
-              <input name="maxSends" placeholder="25" />
-            </label>
-          </div>
-          <div className="form-actions">
-            <button type="submit">Create run</button>
-          </div>
-        </form>
+        <SenderRunForm
+          campaign={campaign}
+          eligibleAccounts={eligibleAccounts}
+          campaignTemplate={campaignTemplate}
+        />
       </div>
 
       <div className="run-tabs">
@@ -569,11 +429,7 @@ function SenderCenter({
             Runs <span className="run-tab-count">{runs.length}</span>
           </span>
           {failedInQueue > 0 ? (
-            <form action={requeueAllAction} className="run-tab-action">
-              <button type="submit" className="secondary-button">
-                Requeue all {failedInQueue} failed
-              </button>
-            </form>
+            <RequeueAllButton campaign={campaign} count={failedInQueue} />
           ) : null}
         </div>
         <div className="run-tab-panel run-tab-panel-runs is-active">
@@ -591,6 +447,9 @@ function SenderCenter({
                       <span className="run-health neutral">auto</span>
                     ) : null}
                     <span>{run.account_usernames?.join(', ')}</span>
+                    {isRunInProgress(run) ? (
+                      <RunProgress value={run.counters?.sent} max={run.max_sends} label="sent" />
+                    ) : null}
                     <small>{shortId(run.id)} | updated {formatDate(run.updated_at)}</small>
                     <small>{formatRunTimeline(run)}</small>
                     <SenderRunDetails run={run} />
@@ -598,24 +457,30 @@ function SenderCenter({
                     {run.pending_commands?.length ? <small>pending command: {run.pending_commands.join(', ')}</small> : null}
                     {run.error ? <small className="run-error">{run.error}</small> : null}
                   </div>
-                  {canCommandRun(run) || Number(run.failed_remaining || 0) > 0 ? (
+                  {canCommandRun(run) || Number(run.failed_remaining || 0) > 0 || canRunAgain(run) ? (
                     <div className="run-actions">
                       {canPauseRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="sender" runId={run.id} command="pause" />
+                        <CommandButton campaign={campaign} runType="sender" runId={run.id} command="pause" />
                       ) : null}
                       {canResumeRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="sender" runId={run.id} command="resume" />
+                        <CommandButton campaign={campaign} runType="sender" runId={run.id} command="resume" />
                       ) : null}
                       {canStopRun(run) ? (
-                        <RunCommandButton action={commandAction} runType="sender" runId={run.id} command="stop" />
+                        <CommandButton campaign={campaign} runType="sender" runId={run.id} command="stop" />
                       ) : null}
                       {Number(run.failed_remaining || 0) > 0 ? (
-                        <form action={retryAction}>
-                          <input type="hidden" name="runId" value={run.id} />
-                          <button type="submit" className="secondary-button">
-                            retry {run.failed_remaining} failed
-                          </button>
-                        </form>
+                        <RetryFailedButton campaign={campaign} runId={run.id} count={run.failed_remaining} />
+                      ) : null}
+                      {canRunAgain(run) ? (
+                        <RunAgainButton
+                          kind="sender"
+                          campaign={campaign}
+                          settings={{
+                            accountUsernames: run.account_usernames || [],
+                            maxSends: run.max_sends,
+                            messageTemplate: run.message_template || '',
+                          }}
+                        />
                       ) : null}
                     </div>
                   ) : null}
@@ -629,7 +494,7 @@ function SenderCenter({
   );
 }
 
-function SenderAccountsPanel({ accounts, campaign, updateAction }) {
+function SenderAccountsPanel({ accounts, campaign }) {
   return (
     <section className="band sender-accounts-band">
       <div className="band-header">
@@ -660,30 +525,15 @@ function SenderAccountsPanel({ accounts, campaign, updateAction }) {
                 <td>{account.total_sent || 0}</td>
                 <td>{account.last_sent_at ? relativeTime(account.last_sent_at) : 'never'}</td>
                 <td>
-                  <form action={updateAction} className="account-assign-form">
-                    <input type="hidden" name="username" value={account.username} />
-                    <select name="status" defaultValue={account.status}>
-                      <option value="active">active</option>
-                      <option value="paused">paused</option>
-                      <option value="blocked">blocked</option>
-                    </select>
-                    <input
-                      name="dailySendLimit"
-                      type="number"
-                      min="0"
-                      max="500"
-                      defaultValue={account.daily_send_limit}
-                      title="Daily send limit"
-                      className="account-limit-input"
-                    />
-                    <select name="campaign" defaultValue={account.campaign || ''}>
-                      <option value="">any campaign</option>
-                      {CAMPAIGNS.map((name) => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                    <button type="submit" className="secondary-button">Save</button>
-                  </form>
+                  <AccountManageForm
+                    account={{
+                      username: account.username,
+                      status: account.status,
+                      campaign: account.campaign,
+                      daily_send_limit: account.daily_send_limit,
+                    }}
+                    campaigns={CAMPAIGNS}
+                  />
                 </td>
               </tr>
             ))}
@@ -698,85 +548,20 @@ function SenderAccountsPanel({ accounts, campaign, updateAction }) {
   );
 }
 
-function RunRequestPanel({ title, action, fields }) {
+function RunProgress({ value, max, label }) {
+  const safeMax = Number(max) || 0;
+  if (!safeMax) return null;
+  const safeValue = Math.max(0, Math.min(Number(value) || 0, safeMax));
+  const pct = Math.min(100, Math.round((safeValue / safeMax) * 100));
   return (
-    <section className="panel">
-      <h2>{title}</h2>
-      <form action={action} className="run-form">
-        {fields.map(([name, label, placeholder]) => (
-          <label key={name}>
-            <span>{label}</span>
-            <input name={name} placeholder={placeholder} />
-          </label>
-        ))}
-        <button type="submit">Create run</button>
-      </form>
-    </section>
-  );
-}
-
-function RunsPanel({ title, description, runType, runs, commandAction }) {
-  return (
-    <section className="panel">
-      <h2>{title}</h2>
-      {description ? <p className="muted-copy">{description}</p> : null}
-      <div className="run-list">
-        {runs.length === 0 ? (
-          <p className="muted-copy">No runs yet.</p>
-        ) : (
-          runs.map((run) => (
-            <div className="run-row" key={run.id}>
-              <div>
-                <strong>DB: {displayRunStatus(run)}</strong>
-                <RunHealth run={run} />
-                <CloudStatusBadge run={run} />
-                <span>{runType === 'scraper' ? run.seed_handles?.join(', ') : run.account_usernames?.join(', ')}</span>
-                <small>{shortId(run.id)} | updated {formatDate(run.updated_at)}</small>
-                <small>{formatRunTimeline(run)}</small>
-                {runType === 'scraper' ? <ScraperRunDetails run={run} /> : <SenderRunDetails run={run} />}
-                <CloudRunDetails run={run} />
-                {run.pending_commands?.length ? <small>pending command: {run.pending_commands.join(', ')}</small> : null}
-                {run.error ? <small className="run-error">{run.error}</small> : null}
-              </div>
-              {canCommandRun(run) ? (
-                <div className="run-actions">
-                  {canPauseRun(run) ? (
-                    <RunCommandButton action={commandAction} runType={runType} runId={run.id} command="pause" />
-                  ) : null}
-                  {canResumeRun(run) ? (
-                    <RunCommandButton action={commandAction} runType={runType} runId={run.id} command="resume" />
-                  ) : null}
-                  {canStopRun(run) ? (
-                    <RunCommandButton action={commandAction} runType={runType} runId={run.id} command="stop" />
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ))
-        )}
+    <div className="run-progress" role="progressbar" aria-valuenow={safeValue} aria-valuemin={0} aria-valuemax={safeMax}>
+      <div className="run-progress-track">
+        <div className="run-progress-fill" style={{ width: `${pct}%` }} />
       </div>
-    </section>
-  );
-}
-
-function RunCommandButton({ action, runType, runId, command }) {
-  return (
-    <form action={action}>
-      <input type="hidden" name="runType" value={runType} />
-      <input type="hidden" name="runId" value={runId} />
-      <input type="hidden" name="command" value={command} />
-      <button type="submit" className="secondary-button">{command}</button>
-    </form>
-  );
-}
-
-function ExtendRunForm({ action, runId }) {
-  return (
-    <form action={action}>
-      <input type="hidden" name="runId" value={runId} />
-      <input name="addAccepted" placeholder="+500" style={{ width: '64px' }} />
-      <button type="submit" className="secondary-button">extend</button>
-    </form>
+      <small>
+        {formatNumber(safeValue)}/{formatNumber(safeMax)} {label}
+      </small>
+    </div>
   );
 }
 
@@ -1026,39 +811,14 @@ function hasBeenMessaged(row) {
 function Shell({ campaign, range = '24h', children }) {
   return (
     <>
-      <header className="topbar">
-        <div>
-          <h1>MagicHat Campaign Dashboard</h1>
-          <p>{campaign}</p>
-        </div>
-        <div className="range-tabs">
-          <Link href="/crm" className="range-tab">CRM</Link>
-        </div>
-        <CampaignTabs current={campaign} range={range} />
-      </header>
+      <Nav
+        title="MagicHat Campaign Dashboard"
+        subtitle={campaign}
+        campaign={campaign}
+        range={range}
+      />
       <main>{children}</main>
     </>
-  );
-}
-
-function CampaignTabs({ current, range }) {
-  return (
-    <div className="range-tabs" role="tablist" aria-label="Campaign">
-      {CAMPAIGNS.map((value) => {
-        const active = value === current;
-        const href = `/?campaign=${value}${range !== '24h' ? `&range=${range}` : ''}`;
-        return (
-          <Link
-            key={value}
-            href={href}
-            className={`range-tab${active ? ' active' : ''}`}
-            aria-current={active ? 'page' : undefined}
-          >
-            {value}
-          </Link>
-        );
-      })}
-    </div>
   );
 }
 
@@ -1159,27 +919,6 @@ function formatDayShort(value) {
   return new Date(value).toLocaleString([], { month: 'short', day: 'numeric' });
 }
 
-function RangeTabs({ current, campaign }) {
-  return (
-    <div className="range-tabs" role="tablist" aria-label="Chart range">
-      {RANGE_OPTIONS.map((opt) => {
-        const href = `/?campaign=${campaign}${opt.value === '24h' ? '' : `&range=${opt.value}`}`;
-        const active = opt.value === current;
-        return (
-          <Link
-            key={opt.value}
-            href={href}
-            className={`range-tab${active ? ' active' : ''}`}
-            aria-current={active ? 'page' : undefined}
-          >
-            {opt.label}
-          </Link>
-        );
-      })}
-    </div>
-  );
-}
-
 function Donut({ centerLabel, total, segments }) {
   const safeTotal = Math.max(0, Number(total) || 0);
   const normalized = segments.map((seg) => ({
@@ -1267,25 +1006,6 @@ function queuedPending(queue, sendTotals) {
   );
 }
 
-function Metric({ label, value, tone = 'neutral', compact = false }) {
-  return (
-    <div className={`metric ${tone} ${compact ? 'compact' : ''}`}>
-      <span>{label}</span>
-      <strong>{formatNumber(value)}</strong>
-    </div>
-  );
-}
-
-function Freshness({ label, value }) {
-  return (
-    <div className="freshness-item">
-      <span>{label}</span>
-      <strong>{relativeTime(value)}</strong>
-      <small>{value ? formatDate(value) : 'No event yet'}</small>
-    </div>
-  );
-}
-
 function withCostRates(cost, scrapeCounts) {
   return {
     ...cost,
@@ -1300,13 +1020,10 @@ function cloudStatusView(run) {
   if (status === 'not_triggered') return { label: 'not triggered', tone: 'warn' };
   if (status === 'failed') return { label: 'failed', tone: 'bad' };
   if (status === 'succeeded') return { label: 'succeeded', tone: 'good' };
+  if (status === 'finished') return { label: 'finished', tone: 'neutral' };
   if (status === 'running' && run.status === 'requested') return { label: 'starting', tone: 'warn' };
   if (status === 'running') return { label: 'running', tone: 'good' };
   return { label: 'unknown', tone: 'warn' };
-}
-
-function sumCounts(counts) {
-  return Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
 }
 
 function percent(numerator, denominator) {
@@ -1347,25 +1064,6 @@ function relativeDuration(value) {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.round(hours / 24)}d`;
-}
-
-function parseHandles(value) {
-  return [...new Set(value
-    .split(/[\s,]+/)
-    .map((handle) => handle.trim().replace(/^@/, ''))
-    .filter(Boolean))]
-    .slice(0, 10);
-}
-
-function boundedPositiveInt(value, fallback, cap) {
-  const parsed = Number(value);
-  const normalized = Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-  return Math.min(normalized, cap);
-}
-
-function positiveInt(value, fallback) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function truncateText(value, maxLength) {

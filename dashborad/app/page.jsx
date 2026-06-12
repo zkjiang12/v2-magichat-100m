@@ -249,7 +249,7 @@ async function AccountsSection({ campaign }) {
 
 async function CreatorsSection({ campaign }) {
   const data = await getCreatorsData({ campaign });
-  return <CreatorKanbanBoard rows={data.acceptedCreators} />;
+  return <CreatorKanbanBoard rows={data.acceptedCreators} totals={data.creatorTotals} />;
 }
 
 function buildTitleProgress(scraperRuns, senderRuns) {
@@ -707,25 +707,30 @@ function StatRows({ rows }) {
   );
 }
 
-function CreatorKanbanBoard({ rows }) {
+function CreatorKanbanBoard({ rows, totals }) {
+  // rows is capped to the most recent evaluations (display only); header
+  // counts come from totals so they reflect the whole campaign.
   const columns = [
     {
       key: 'scored',
       title: 'Scored Creators',
       description: 'Score 1-4',
       rows: rows.filter((row) => scoreValue(row) >= 1 && scoreValue(row) <= 4),
+      total: totals?.scored,
     },
     {
       key: 'qualified',
       title: 'Qualified',
       description: 'Score 3-4',
       rows: rows.filter((row) => scoreValue(row) >= 3 && scoreValue(row) <= 4),
+      total: totals?.qualified,
     },
     {
       key: 'messaged',
       title: 'Messaged',
       description: 'Sender sent a DM',
       rows: rows.filter((row) => hasBeenMessaged(row)),
+      total: totals?.messaged,
     },
   ];
 
@@ -742,7 +747,7 @@ function CreatorKanbanBoard({ rows }) {
                 <h3>{column.title}</h3>
                 <span>{column.description}</span>
               </div>
-              <strong>{formatNumber(column.rows.length)}</strong>
+              <strong>{formatNumber(column.total ?? column.rows.length)}</strong>
             </div>
             <div className="creator-card-list">
               {column.rows.length === 0 ? (
@@ -752,6 +757,12 @@ function CreatorKanbanBoard({ rows }) {
                   <CreatorKanbanCard row={row} key={`${column.key}-${row.handle}`} />
                 ))
               )}
+              {(column.total ?? 0) > column.rows.length ? (
+                <p className="muted-copy">
+                  Showing the {formatNumber(column.rows.length)} most recent of{' '}
+                  {formatNumber(column.total)}.
+                </p>
+              ) : null}
             </div>
           </section>
         ))}

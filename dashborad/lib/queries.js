@@ -73,7 +73,11 @@ export async function getAccountsData({ campaign }) {
 }
 
 export async function getCreatorsData({ campaign }) {
-  return { acceptedCreators: await queryCreators(campaign) };
+  const [acceptedCreators, creatorTotals] = await Promise.all([
+    queryCreators(campaign),
+    queryCreatorTotals(campaign),
+  ]);
+  return { acceptedCreators, creatorTotals };
 }
 
 export async function createScraperRun({
@@ -882,6 +886,36 @@ async function queryCreators(campaign) {
     [campaign],
   );
   return result.rows;
+}
+
+// Campaign-wide column totals for the kanban. queryCreators caps the rows it
+// returns (display only), so counting those rows undercounts — totals must
+// come from the full table. Joins are 1:1 via the (creator_id, campaign)
+// unique constraints on both creator_evaluations and send_queue.
+async function queryCreatorTotals(campaign) {
+  const result = await query(
+    `
+      select
+        count(*) filter (where ce.fit_score between 1 and 4)::int as scored,
+        count(*) filter (where ce.fit_score between 3 and 4)::int as qualified,
+        count(*) filter (
+          where ce.fit_score between 1 and 4
+            and (sq.status = 'sent' or sq.sent_at is not null)
+        )::int as messaged
+      from creator_evaluations ce
+      left join send_queue sq
+        on sq.creator_id = ce.creator_id
+        and sq.campaign = ce.campaign
+      where ce.campaign = $1
+    `,
+    [campaign],
+  );
+  const row = result.rows[0] || {};
+  return {
+    scored: Number(row.scored || 0),
+    qualified: Number(row.qualified || 0),
+    messaged: Number(row.messaged || 0),
+  };
 }
 
 async function queryInstantlyTotals(campaign) {

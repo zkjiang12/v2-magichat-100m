@@ -8,6 +8,7 @@ import {
   listCampaignNames,
   validateCampaignDefinition,
 } from '../src/campaigns/index.js';
+import { ugcCreatorsEmail } from '../src/campaigns/ugc-creators-email.js';
 import { ugcCreators } from '../src/campaigns/ugc-creators.js';
 import { getConfig } from '../src/config.js';
 import { isKnownOutsideFollowerRange } from '../src/qualification.js';
@@ -142,7 +143,8 @@ function stubProfile({ handle = 'someone', name = null, bio = null, followersCou
 test('campaign registry returns known definitions and rejects unknown names', () => {
   assert.equal(getCampaignDefinition('day_in_life_creators'), dayInLifeCreators);
   assert.equal(getCampaignDefinition('ugc_creators'), ugcCreators);
-  assert.deepEqual(listCampaignNames(), ['day_in_life_creators', 'ugc_creators']);
+  assert.equal(getCampaignDefinition('ugc_creators_email'), ugcCreatorsEmail);
+  assert.deepEqual(listCampaignNames(), ['day_in_life_creators', 'ugc_creators', 'ugc_creators_email']);
   assert.throws(() => getCampaignDefinition('nope'), /Unknown campaign: nope/);
 });
 
@@ -235,6 +237,61 @@ test('ugc rule scorer rejects with 2 outside the follower range or when follower
     ugcStubConfig,
   );
   assert.deepEqual([unknown.fitScore, unknown.list], [2, 'reject']);
+});
+
+test('ugc_creators_email matches ugc_creators except for the email requirement', () => {
+  assert.deepEqual(ugcCreatorsEmail.defaults, ugcCreators.defaults);
+  assert.deepEqual(ugcCreatorsEmail.hardNoTerms, ugcCreators.hardNoTerms);
+  assert.equal(ugcCreatorsEmail.scoring.mode, 'rule');
+  assert.equal(ugcCreatorsEmail.accept({ fitScore: 3 }), true);
+  assert.equal(ugcCreatorsEmail.accept({ fitScore: 2 }), false);
+});
+
+test('ugc_creators_email accepts UGC profiles with an email in the bio', () => {
+  const review = ugcCreatorsEmail.scoring.score(
+    stubProfile({ bio: 'UGC creator | collabs: jess@example.com' }),
+    ugcStubConfig,
+  );
+  assert.deepEqual([review.fitScore, review.list], [4, 'target_now']);
+  assert.match(review.reasoning, /jess@example\.com/);
+});
+
+test('ugc_creators_email accepts via public business email when bio has none', () => {
+  const profile = stubProfile({ bio: 'content creator, brand partnerships: dm me' });
+  profile.creator.publicEmail = 'biz@example.com';
+  const review = ugcCreatorsEmail.scoring.score(profile, ugcStubConfig);
+  assert.deepEqual([review.fitScore, review.list], [3, 'target_now']);
+  assert.match(review.reasoning, /biz@example\.com/);
+});
+
+test('ugc_creators_email rejects UGC profiles without a contactable email', () => {
+  const noEmail = ugcCreatorsEmail.scoring.score(
+    stubProfile({ bio: 'UGC creator | collabs welcome' }),
+    ugcStubConfig,
+  );
+  assert.deepEqual([noEmail.fitScore, noEmail.list], [2, 'reject']);
+  assert.match(noEmail.reasoning, /no contactable email/);
+
+  // Cross-platform mentions are structurally valid emails but not contactable.
+  const platformMention = ugcCreatorsEmail.scoring.score(
+    stubProfile({ bio: 'UGC creator | yt@jess.vlogs' }),
+    ugcStubConfig,
+  );
+  assert.deepEqual([platformMention.fitScore, platformMention.list], [2, 'reject']);
+});
+
+test('ugc_creators_email keeps the base rejections even when an email is present', () => {
+  const notUgc = ugcCreatorsEmail.scoring.score(
+    stubProfile({ bio: 'coffee & travel | hi@example.com' }),
+    ugcStubConfig,
+  );
+  assert.deepEqual([notUgc.fitScore, notUgc.list], [2, 'reject']);
+
+  const tooSmall = ugcCreatorsEmail.scoring.score(
+    stubProfile({ bio: 'UGC creator | jess@example.com', followersCount: 500 }),
+    ugcStubConfig,
+  );
+  assert.deepEqual([tooSmall.fitScore, tooSmall.list], [2, 'reject']);
 });
 
 test('detectHardNoAccount uses campaign terms', () => {

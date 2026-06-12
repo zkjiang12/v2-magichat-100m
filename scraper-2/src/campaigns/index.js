@@ -1,8 +1,9 @@
 import { dayInLifeCreators } from './day-in-life-creators.js';
+import { ugcCreatorsEmail } from './ugc-creators-email.js';
 import { ugcCreators } from './ugc-creators.js';
 
 const CAMPAIGN_DEFINITIONS = new Map(
-  [dayInLifeCreators, ugcCreators].map((definition) => [definition.name, definition]),
+  [dayInLifeCreators, ugcCreators, ugcCreatorsEmail].map((definition) => [definition.name, definition]),
 );
 
 for (const definition of CAMPAIGN_DEFINITIONS.values()) {

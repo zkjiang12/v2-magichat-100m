@@ -30,6 +30,8 @@ Current campaigns:
 - `day_in_life_creators`: large verified lifestyle creators, scored with OpenAI.
 - `ugc_creators`: 1K-50K follower UGC creators matched by bio/username terms;
   rule-scored, no posts scrape, no OpenAI cost.
+- `ugc_creators_email`: identical to `ugc_creators` but only accepts creators with a
+  contactable email (bio or public business email), for pure cold-email outbound.
 
 Explicit `INSTAGRAM_*` env vars always override campaign defaults. To add a campaign,
 create a definition file in `src/campaigns/`, register it in `src/campaigns/index.js`,
@@ -339,9 +341,10 @@ as custom variables. Duplicates are blocked by the `instantly_sync` table plus
 Setup (one-time):
 
 1. Apply `sender-2/sql/migrations/015_add_creator_contacts_and_instantly_sync.sql`.
-2. Create the two campaigns in Instantly with their email sequences, then set
-   `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID_UGC_CREATORS`, and
-   `INSTANTLY_CAMPAIGN_ID_DAY_IN_LIFE_CREATORS` in `.env`.
+2. Create the campaigns in Instantly with their email sequences, then set
+   `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID_UGC_CREATORS`,
+   `INSTANTLY_CAMPAIGN_ID_DAY_IN_LIFE_CREATORS`, and
+   `INSTANTLY_CAMPAIGN_ID_UGC_CREATORS_EMAIL` in `.env`.
 
 Commands (run from `scraper-2/`, which has `.env` and `data/`):
 

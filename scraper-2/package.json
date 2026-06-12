@@ -10,6 +10,7 @@
     "worker:claim": "node src/frontier-crawl.js --claim-next",
     "backfill:emails": "node src/backfill-emails.js",
     "instantly:sync": "node src/instantly-sync.js",
+    "instantly:replies": "node src/instantly-check-replies.js",
     "dashboard:legacy": "node src/dashboard.js",
     "review": "node src/cli.js",
     "test": "node --test tests/*.test.js"

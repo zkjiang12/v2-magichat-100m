@@ -59,6 +59,29 @@ export function createInstantlyClient({ apiKey, fetchImpl = fetch }) {
         label: `Instantly create lead ${lead.email}`,
       });
     },
+
+    async listEmails({ campaignId, emailType = 'received', maxPages = 50 } = {}) {
+      const emails = [];
+      const seenCursors = new Set();
+      let startingAfter = null;
+      let pages = 0;
+      do {
+        const query = new URLSearchParams({ limit: '100' });
+        if (campaignId) query.set('campaign_id', campaignId);
+        if (emailType) query.set('email_type', emailType);
+        if (startingAfter) query.set('starting_after', startingAfter);
+        const page = await request({
+          path: `/emails?${query}`,
+          label: 'Instantly list emails',
+        });
+        emails.push(...(page.items || []));
+        startingAfter = page.next_starting_after || null;
+        if (startingAfter && seenCursors.has(startingAfter)) break;
+        if (startingAfter) seenCursors.add(startingAfter);
+        pages += 1;
+      } while (startingAfter && pages < maxPages);
+      return emails;
+    },
   };
 }
 

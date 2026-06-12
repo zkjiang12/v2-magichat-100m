@@ -376,7 +376,8 @@ Replies to Instantly campaign emails are pulled into Postgres
 reply rate per campaign). Replying itself happens in Instantly's Unibox; the
 CRM is for triage.
 
-Setup (one-time): apply `sender-2/sql/migrations/018_add_email_responses.sql`.
+Setup (one-time): apply `sender-2/sql/migrations/018_add_email_responses.sql`
+and `020_add_instantly_campaign_stats.sql`.
 The job reuses the same `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID_*` env
 vars as the lead sync.
 
@@ -391,5 +392,7 @@ npm run instantly:replies -- --campaign ugc_creators
 Each received email is stored once (unique on the Instantly email id) and
 attributed back to a creator via `instantly_sync` (lead email + Instantly
 campaign id). Replies that can't be matched yet are stored unattributed and
-matched on later runs. Run it on a schedule (e.g. every 15 minutes alongside
+matched on later runs. Each run also refreshes `instantly_campaign_stats` with
+Instantly's own per-campaign analytics (emails sent, bounced, contacted) —
+these feed the CRM campaign cards and the Outreach donut on the dashboard. Run it on a schedule (e.g. every 15 minutes alongside
 the other Cloud Run jobs) once campaigns are live.

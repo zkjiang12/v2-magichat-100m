@@ -16,6 +16,7 @@ export async function getOverviewData({ campaign, range = '24h' }) {
     sendQueueTotals,
     sendAttemptTotals,
     sendAttemptHourly,
+    instantlySendStats,
   ] = await Promise.all([
     queryScrapeTotals(campaign),
     queryScrapeHourly(campaign, cfg),
@@ -24,6 +25,7 @@ export async function getOverviewData({ campaign, range = '24h' }) {
     querySendQueueTotals(campaign),
     querySendAttemptTotals(campaign),
     querySendAttemptHourly(campaign, cfg),
+    queryInstantlySendStats(campaign),
   ]);
 
   return {
@@ -34,6 +36,7 @@ export async function getOverviewData({ campaign, range = '24h' }) {
     sendQueueTotals,
     sendAttemptTotals,
     sendAttemptHourly,
+    instantlySendStats,
   };
 }
 
@@ -950,6 +953,34 @@ async function queryInstantlyTotals(campaign) {
     // panel instead of breaking the page, but leave a trace in server logs.
     console.warn(`[dashboard] instantly totals unavailable: ${error.message}`);
     return null;
+  }
+}
+
+// Instantly's own send counts for this campaign (written by the reply-check
+// job into instantly_campaign_stats). Zeros when migration 020 isn't applied
+// or the job hasn't run yet, so the Outreach donut just shows DM data.
+async function queryInstantlySendStats(campaign) {
+  try {
+    const result = await query(
+      `
+        select
+          sum(emails_sent_count)::int as emails_sent,
+          sum(bounced_count)::int as bounced,
+          max(fetched_at) as fetched_at
+        from instantly_campaign_stats
+        where campaign = $1
+      `,
+      [campaign],
+    );
+    const row = result.rows[0] || {};
+    return {
+      emailsSent: Number(row.emails_sent || 0),
+      bounced: Number(row.bounced || 0),
+      fetchedAt: row.fetched_at || null,
+    };
+  } catch (error) {
+    console.warn(`[dashboard] instantly campaign stats unavailable: ${error.message}`);
+    return { emailsSent: 0, bounced: 0, fetchedAt: null };
   }
 }
 

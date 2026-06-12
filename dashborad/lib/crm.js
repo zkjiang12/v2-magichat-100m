@@ -80,9 +80,9 @@ export async function getCrmLeads() {
 }
 
 // Leads pushed to Instantly vs distinct creators who replied, per source
-// campaign, with the manual status breakdown.
+// campaign, with the manual status breakdown and Instantly's own send counts.
 export async function getCrmCampaignStats() {
-  const [pushes, responses] = await Promise.all([
+  const [pushes, responses, sendStats] = await Promise.all([
     query(
       `
         select campaign, count(distinct creator_id)::int as contacted
@@ -107,14 +107,17 @@ export async function getCrmCampaignStats() {
         group by r.campaign
       `,
     ),
+    queryInstantlySendStats(),
   ]);
 
   const pushesByCampaign = Object.fromEntries(pushes.rows.map((row) => [row.campaign, row]));
   const responsesByCampaign = Object.fromEntries(responses.rows.map((row) => [row.campaign, row]));
+  const statsByCampaign = Object.fromEntries(sendStats.map((row) => [row.campaign, row]));
   const names = [...new Set([
     ...CAMPAIGNS,
     ...pushes.rows.map((row) => row.campaign),
     ...responses.rows.map((row) => row.campaign),
+    ...sendStats.map((row) => row.campaign),
   ])];
 
   return names.map((name) => {
@@ -129,8 +132,34 @@ export async function getCrmCampaignStats() {
       interested: Number(responsesByCampaign[name]?.interested || 0),
       closed: Number(responsesByCampaign[name]?.closed || 0),
       churned: Number(responsesByCampaign[name]?.churned || 0),
+      emailsSent: Number(statsByCampaign[name]?.emails_sent || 0),
+      emailsBounced: Number(statsByCampaign[name]?.bounced || 0),
+      statsFetchedAt: statsByCampaign[name]?.fetched_at || null,
     };
   });
+}
+
+// Instantly's own per-campaign send counts (written by the reply-check job).
+// Summed per source campaign in case one ever maps to multiple Instantly
+// campaigns. Returns [] when migration 020 isn't applied yet.
+async function queryInstantlySendStats() {
+  try {
+    const result = await query(
+      `
+        select
+          campaign,
+          sum(emails_sent_count)::int as emails_sent,
+          sum(bounced_count)::int as bounced,
+          max(fetched_at) as fetched_at
+        from instantly_campaign_stats
+        group by campaign
+      `,
+    );
+    return result.rows;
+  } catch (error) {
+    console.warn(`[crm] instantly campaign stats unavailable: ${error.message}`);
+    return [];
+  }
 }
 
 // Replies whose sender couldn't be matched to a pushed lead. They stay in

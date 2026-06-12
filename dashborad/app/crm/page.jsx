@@ -93,6 +93,11 @@ async function CrmContent({ campaignFilter, statusFilter, minScore }) {
                 {(stat.replyRate * 100).toFixed(1)}% reply rate
                 {' · '}{stat.interested} interested · {stat.closed} closed · {stat.churned} churned
               </p>
+              <p className="muted-copy">
+                {stat.emailsSent} emails sent
+                {stat.emailsBounced > 0 ? ` · ${stat.emailsBounced} bounced` : ''}
+                {stat.statsFetchedAt ? ` · as of ${formatRelative(stat.statsFetchedAt)}` : ''}
+              </p>
             </Link>
           );
         })}
@@ -171,13 +176,11 @@ function LeadRow({ lead }) {
     <details className="crm-lead">
       <summary>
         <span className="crm-lead-who">
-          <IgHandle
-            handle={lead.handle}
-            href={`/creators/${lead.handle}?campaign=${lead.campaign}`}
-            profileUrl={lead.profile_url}
-          />
+          <IgHandle handle={lead.handle} profileUrl={lead.profile_url} />
           <small>
             {lead.campaign}
+            {' · '}
+            <Link href={`/creators/${lead.handle}?campaign=${lead.campaign}`}>details</Link>
             <EmailNote emails={lead.emails} />
           </small>
         </span>

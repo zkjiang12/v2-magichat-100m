@@ -90,6 +90,17 @@ export function createInstantlyClient({ apiKey, fetchImpl = fetch }) {
       } while (startingAfter && pages < maxPages);
       return emails;
     },
+
+    // The analytics endpoint returns an array even when filtered to one id.
+    async getCampaignAnalytics({ campaignId }) {
+      const query = new URLSearchParams({ id: campaignId });
+      const result = await request({
+        path: `/campaigns/analytics?${query}`,
+        label: `Instantly campaign analytics ${campaignId}`,
+      });
+      const items = Array.isArray(result) ? result : result?.items || [];
+      return items.find((item) => item.campaign_id === campaignId) || items[0] || null;
+    },
   };
 }
 

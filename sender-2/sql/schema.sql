@@ -273,6 +273,22 @@ create table if not exists email_responses (
   unique (instantly_email_id)
 );
 
+-- Campaign-level send stats from Instantly's analytics API; one row per
+-- Instantly campaign, overwritten on every reply-check run.
+create table if not exists instantly_campaign_stats (
+  instantly_campaign_id text primary key,
+  campaign text not null,
+  leads_count integer not null default 0,
+  contacted_count integer not null default 0,
+  emails_sent_count integer not null default 0,
+  bounced_count integer not null default 0,
+  reply_count integer not null default 0,
+  fetched_at timestamptz not null default now()
+);
+
+create index if not exists instantly_campaign_stats_campaign_idx
+  on instantly_campaign_stats (campaign);
+
 create index if not exists send_queue_claim_idx
   on send_queue (status, retry_after, priority, queued_at);
 
@@ -338,6 +354,7 @@ alter table run_commands enable row level security;
 alter table dm_responses enable row level security;
 alter table lead_statuses enable row level security;
 alter table email_responses enable row level security;
+alter table instantly_campaign_stats enable row level security;
 
 do $$
 begin

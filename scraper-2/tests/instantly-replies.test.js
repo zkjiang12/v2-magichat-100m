@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   extractBodyText,
   extractEmailAddress,
+  normalizeCampaignAnalytics,
   normalizeReceivedEmail,
 } from '../src/instantly-check-replies.js';
 import { createInstantlyClient } from '../src/instantly.js';
@@ -109,4 +110,46 @@ test('listEmails stops on a repeated cursor instead of looping forever', async (
 
   assert.equal(calls, 2);
   assert.equal(emails.length, 2);
+});
+
+test('normalizeCampaignAnalytics defaults missing counts to zero', () => {
+  assert.equal(normalizeCampaignAnalytics(null), null);
+  assert.deepEqual(
+    normalizeCampaignAnalytics({
+      campaign_id: 'camp-1',
+      leads_count: 555,
+      contacted_count: 540,
+      emails_sent_count: 1080,
+      bounced_count: 12,
+      reply_count: 31,
+    }),
+    { leadsCount: 555, contactedCount: 540, emailsSentCount: 1080, bouncedCount: 12, replyCount: 31 },
+  );
+  assert.deepEqual(
+    normalizeCampaignAnalytics({ campaign_id: 'camp-1', emails_sent_count: '7', bounced_count: null }),
+    { leadsCount: 0, contactedCount: 0, emailsSentCount: 7, bouncedCount: 0, replyCount: 0 },
+  );
+});
+
+test('getCampaignAnalytics queries by id and picks the matching row', async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(url);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [
+        { campaign_id: 'other', emails_sent_count: 1 },
+        { campaign_id: 'camp-1', emails_sent_count: 42 },
+      ],
+    };
+  };
+
+  const client = createInstantlyClient({ apiKey: 'test-key', fetchImpl });
+  const analytics = await client.getCampaignAnalytics({ campaignId: 'camp-1' });
+
+  assert.equal(analytics.emails_sent_count, 42);
+  const url = new URL(requests[0]);
+  assert.ok(url.pathname.endsWith('/campaigns/analytics'));
+  assert.equal(url.searchParams.get('id'), 'camp-1');
 });

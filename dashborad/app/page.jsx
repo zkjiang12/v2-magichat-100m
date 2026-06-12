@@ -83,6 +83,7 @@ async function OverviewSection({ campaign, range, bucketKind }) {
   const scrapeTotals = data.scrapeTotals;
   const queue = data.sendQueueTotals;
   const sendTotals = data.sendAttemptTotals;
+  const emailStats = data.instantlySendStats;
   const costTotals = withCostRates(data.costTotals, scrapeTotals);
 
   return (
@@ -103,22 +104,24 @@ async function OverviewSection({ campaign, range, bucketKind }) {
           ]}
         />
         <Donut
-          centerLabel="DMs"
-          total={sendDmTotal(queue, sendTotals)}
+          centerLabel="Outreach"
+          total={sendDmTotal(queue, sendTotals) + emailStats.emailsSent + emailStats.bounced}
           segments={[
             { key: 'sent', label: 'Sent DMs', value: queue.sent || sendTotals.sent || 0, color: 'var(--green)' },
             {
               key: 'failed',
-              label: 'Failed Sends',
+              label: 'Failed DMs',
               value: (queue.failed_retryable || 0) + (queue.failed_final || 0),
               color: 'var(--red)',
             },
             {
               key: 'queued',
-              label: 'Queued Sends',
+              label: 'Queued DMs',
               value: queuedPending(queue, sendTotals),
               color: '#3f3f46',
             },
+            { key: 'emails-sent', label: 'Sent Emails', value: emailStats.emailsSent, color: 'var(--blue)' },
+            { key: 'emails-bounced', label: 'Bounced Emails', value: emailStats.bounced, color: 'var(--amber)' },
           ]}
         />
       </div>

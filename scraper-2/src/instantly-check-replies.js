@@ -64,6 +64,20 @@ function cleanText(text) {
   return cleaned.length > MAX_BODY_CHARS ? `${cleaned.slice(0, MAX_BODY_CHARS)}…` : cleaned;
 }
 
+// Counts from Instantly's campaign analytics, defaulting anything missing to
+// zero so a partial payload can't write nulls into instantly_campaign_stats.
+export function normalizeCampaignAnalytics(item) {
+  if (!item) return null;
+  const count = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+  return {
+    leadsCount: count(item.leads_count),
+    contactedCount: count(item.contacted_count),
+    emailsSentCount: count(item.emails_sent_count),
+    bouncedCount: count(item.bounced_count),
+    replyCount: count(item.reply_count),
+  };
+}
+
 export async function runInstantlyReplyCheck({ campaign = null, log = console.log, client = null } = {}) {
   const apiKey = process.env.INSTANTLY_API_KEY;
   if (!client && !apiKey) throw new Error('INSTANTLY_API_KEY is required.');
@@ -90,7 +104,15 @@ export async function runInstantlyReplyCheck({ campaign = null, log = console.lo
   });
 
   const instantly = client || createInstantlyClient({ apiKey });
-  const summary = { seen: 0, inserted: 0, updated: 0, unattributed: 0, malformed: 0, byCampaign: {} };
+  const summary = {
+    seen: 0,
+    inserted: 0,
+    updated: 0,
+    unattributed: 0,
+    malformed: 0,
+    statsUpdated: 0,
+    byCampaign: {},
+  };
 
   try {
     for (const name of mappedCampaigns) {
@@ -126,16 +148,67 @@ export async function runInstantlyReplyCheck({ campaign = null, log = console.lo
         `[instantly] ${name}: ${campaignSummary.seen} replies seen, ${campaignSummary.inserted} new` +
           (campaignSummary.unattributed ? `, ${campaignSummary.unattributed} unattributed` : ''),
       );
+
+      // Analytics are a bonus on top of reply capture: a failure here (e.g.
+      // endpoint hiccup) shouldn't lose the replies we just stored.
+      try {
+        const analytics = normalizeCampaignAnalytics(
+          await instantly.getCampaignAnalytics({ campaignId: instantlyCampaignId }),
+        );
+        if (analytics) {
+          await upsertCampaignStats({ pool, instantlyCampaignId, campaign: name, analytics });
+          summary.statsUpdated += 1;
+          log(
+            `[instantly] ${name}: stats emails_sent=${analytics.emailsSentCount} ` +
+              `contacted=${analytics.contactedCount} bounced=${analytics.bouncedCount}`,
+          );
+        } else {
+          log(`[instantly] ${name}: no analytics returned, stats row left as-is`);
+        }
+      } catch (error) {
+        log(`[instantly] ${name}: analytics fetch failed (${error.message}), stats row left as-is`);
+      }
     }
 
     log(
       `[instantly] reply check complete: seen=${summary.seen} inserted=${summary.inserted} ` +
-        `updated=${summary.updated} unattributed=${summary.unattributed} malformed=${summary.malformed}`,
+        `updated=${summary.updated} unattributed=${summary.unattributed} malformed=${summary.malformed} ` +
+        `stats_updated=${summary.statsUpdated}/${mappedCampaigns.length}`,
     );
     return summary;
   } finally {
     await pool.end();
   }
+}
+
+async function upsertCampaignStats({ pool, instantlyCampaignId, campaign, analytics }) {
+  await pool.query(
+    `
+      insert into instantly_campaign_stats (
+        instantly_campaign_id, campaign, leads_count, contacted_count,
+        emails_sent_count, bounced_count, reply_count, fetched_at
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, now())
+      on conflict (instantly_campaign_id)
+      do update set
+        campaign = excluded.campaign,
+        leads_count = excluded.leads_count,
+        contacted_count = excluded.contacted_count,
+        emails_sent_count = excluded.emails_sent_count,
+        bounced_count = excluded.bounced_count,
+        reply_count = excluded.reply_count,
+        fetched_at = now()
+    `,
+    [
+      instantlyCampaignId,
+      campaign,
+      analytics.leadsCount,
+      analytics.contactedCount,
+      analytics.emailsSentCount,
+      analytics.bouncedCount,
+      analytics.replyCount,
+    ],
+  );
 }
 
 // email -> { creatorId, campaign } for every lead pushed to this Instantly campaign.

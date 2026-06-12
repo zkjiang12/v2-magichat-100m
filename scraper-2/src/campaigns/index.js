@@ -1,9 +1,10 @@
 import { dayInLifeCreators } from './day-in-life-creators.js';
+import { dayInLifeUsCreators } from './day-in-life-us.js';
 import { ugcCreatorsEmail } from './ugc-creators-email.js';
 import { ugcCreators } from './ugc-creators.js';
 
 const CAMPAIGN_DEFINITIONS = new Map(
-  [dayInLifeCreators, ugcCreators, ugcCreatorsEmail].map((definition) => [definition.name, definition]),
+  [dayInLifeCreators, dayInLifeUsCreators, ugcCreators, ugcCreatorsEmail].map((definition) => [definition.name, definition]),
 );
 
 for (const definition of CAMPAIGN_DEFINITIONS.values()) {
@@ -47,6 +48,9 @@ export function validateCampaignDefinition(definition) {
     if (typeof defaults[key] !== 'boolean') {
       issues.push(`defaults.${key} must be a boolean`);
     }
+  }
+  if (defaults.requireEmail !== undefined && typeof defaults.requireEmail !== 'boolean') {
+    issues.push('defaults.requireEmail must be a boolean when set');
   }
 
   const hardNoTerms = definition.hardNoTerms || {};

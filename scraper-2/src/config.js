@@ -39,6 +39,9 @@ export function getConfig() {
     instagramRequireVerified: parseBoolean(
       process.env.INSTAGRAM_REQUIRE_VERIFIED ?? String(campaignDefaults.requireVerified),
     ),
+    instagramRequireEmail: parseBoolean(
+      process.env.INSTAGRAM_REQUIRE_EMAIL ?? String(campaignDefaults.requireEmail ?? false),
+    ),
     instagramProfilePrefilter: parseBoolean(
       process.env.INSTAGRAM_PROFILE_PREFILTER ?? String(campaignDefaults.profilePrefilter),
     ),

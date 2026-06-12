@@ -11,7 +11,7 @@ import {
 import { ugcCreatorsEmail } from '../src/campaigns/ugc-creators-email.js';
 import { ugcCreators } from '../src/campaigns/ugc-creators.js';
 import { getConfig } from '../src/config.js';
-import { isKnownOutsideFollowerRange } from '../src/qualification.js';
+import { buildProfileHardNoReview, isKnownOutsideFollowerRange } from '../src/qualification.js';
 import { buildScoreSchema } from '../src/scorer.js';
 
 // Verbatim copies of the pre-campaign literals from scorer.js and account-filter.js.
@@ -144,8 +144,69 @@ test('campaign registry returns known definitions and rejects unknown names', ()
   assert.equal(getCampaignDefinition('day_in_life_creators'), dayInLifeCreators);
   assert.equal(getCampaignDefinition('ugc_creators'), ugcCreators);
   assert.equal(getCampaignDefinition('ugc_creators_email'), ugcCreatorsEmail);
-  assert.deepEqual(listCampaignNames(), ['day_in_life_creators', 'ugc_creators', 'ugc_creators_email']);
+  assert.deepEqual(listCampaignNames(), ['day_in_life_creators', 'day_in_life_us', 'ugc_creators', 'ugc_creators_email']);
   assert.throws(() => getCampaignDefinition('nope'), /Unknown campaign: nope/);
+});
+
+test('day_in_life_us keeps day_in_life qualification but gates acceptance on US routing', () => {
+  const usCampaign = getCampaignDefinition('day_in_life_us');
+  assert.deepEqual(usCampaign.defaults, { ...dayInLifeCreators.defaults, requireEmail: true });
+  assert.deepEqual(usCampaign.hardNoTerms, dayInLifeCreators.hardNoTerms);
+  assert.deepEqual(usCampaign.scoring.listValues, [
+    'target_now_california',
+    'target_now_us',
+    'business_day_in_life',
+    'no_us_evidence',
+    'reject',
+  ]);
+  assert.equal(usCampaign.accept({ fitScore: 4, list: 'target_now_california' }), true);
+  assert.equal(usCampaign.accept({ fitScore: 3, list: 'target_now_us' }), true);
+  assert.equal(usCampaign.accept({ fitScore: 3, list: 'business_day_in_life' }), true);
+  assert.equal(usCampaign.accept({ fitScore: 4, list: 'no_us_evidence' }), false);
+  assert.equal(usCampaign.accept({ fitScore: 2, list: 'target_now_us' }), false);
+});
+
+test('requireEmail hard-no rejects profiles without a contactable email', () => {
+  const usStubConfig = {
+    instagramFollowerThreshold: 10000,
+    instagramFollowerMax: null,
+    instagramRequireEmail: true,
+    campaignDefinition: getCampaignDefinition('day_in_life_us'),
+  };
+
+  const noEmail = buildProfileHardNoReview({
+    scrapedProfile: stubProfile({ bio: 'daily life in LA' }),
+    config: usStubConfig,
+  });
+  assert.equal(noEmail.fitScore, 1);
+  assert.match(noEmail.reasoning, /no contactable email/);
+
+  const platformMentionOnly = buildProfileHardNoReview({
+    scrapedProfile: stubProfile({ bio: 'yt@my.channel — daily vlogs' }),
+    config: usStubConfig,
+  });
+  assert.match(platformMentionOnly.reasoning, /no contactable email/);
+
+  const bioEmail = buildProfileHardNoReview({
+    scrapedProfile: stubProfile({ bio: 'LA based | collabs: hello@creator.com' }),
+    config: usStubConfig,
+  });
+  assert.equal(bioEmail, null);
+
+  const publicEmailOnly = buildProfileHardNoReview({
+    scrapedProfile: {
+      handle: 'someone',
+      creator: { bio: 'daily life in LA', followersCount: 20000, publicEmail: 'biz@creator.com' },
+    },
+    config: usStubConfig,
+  });
+  assert.equal(publicEmailOnly, null);
+
+  const emailNotRequired = buildProfileHardNoReview({
+    scrapedProfile: stubProfile({ bio: 'daily life in LA' }),
+    config: { ...usStubConfig, instagramRequireEmail: false },
+  });
+  assert.equal(emailNotRequired, null);
 });
 
 test('day_in_life_creators definition matches the pre-campaign literals exactly', () => {

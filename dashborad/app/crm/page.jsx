@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 
+import IgHandle, { EmailNote } from '../IgHandle';
 import { CAMPAIGNS } from '../../lib/campaigns';
 import { saveCreatorNote } from '../../lib/queries';
 import { LEAD_STATUSES, getCrmCampaignStats, getCrmLeads, setLeadStatus } from '../../lib/crm';
@@ -178,8 +179,15 @@ function LeadRow({ lead, updateStatus, saveNote }) {
     <details className="crm-lead">
       <summary>
         <span className="crm-lead-who">
-          <Link href={`/creators/${lead.handle}?campaign=${lead.campaign}`}>@{lead.handle}</Link>
-          <small>{lead.campaign}</small>
+          <IgHandle
+            handle={lead.handle}
+            href={`/creators/${lead.handle}?campaign=${lead.campaign}`}
+            profileUrl={lead.profile_url}
+          />
+          <small>
+            {lead.campaign}
+            <EmailNote emails={lead.emails} />
+          </small>
         </span>
         {lead.fit_score ? (
           <span className={`score-pill score-${lead.fit_score}`}>{lead.fit_score}</span>
@@ -187,7 +195,7 @@ function LeadRow({ lead, updateStatus, saveNote }) {
           <span className="score-pill">-</span>
         )}
         <span className="crm-lead-preview">{latest ? latest.text : ''}</span>
-        <span className="crm-lead-account">{lead.sender_username ? `@${lead.sender_username}` : ''}</span>
+        <span className="crm-lead-account"><IgHandle handle={lead.sender_username} /></span>
         <span className={`crm-status ${lead.lead_status}`}>{STATUS_LABELS[lead.lead_status]}</span>
         <span className="crm-lead-when">{formatRelative(lead.last_responded_at)}</span>
       </summary>
@@ -201,7 +209,7 @@ function LeadRow({ lead, updateStatus, saveNote }) {
                 <p>{message.text}</p>
                 <small>
                   {formatDate(message.responded_at)}
-                  {message.account ? ` · to @${message.account}` : ''}
+                  {message.account ? <> · to <IgHandle handle={message.account} /></> : null}
                 </small>
               </li>
             ))}
@@ -214,6 +222,18 @@ function LeadRow({ lead, updateStatus, saveNote }) {
         </div>
 
         <div>
+          {Array.isArray(lead.emails) && lead.emails.length > 0 ? (
+            <p className="crm-lead-emails">
+              <small>bio email:</small>{' '}
+              {lead.emails.map((email, index) => (
+                <span key={email}>
+                  {index > 0 ? ', ' : ''}
+                  <a href={`mailto:${email}`}>{email}</a>
+                </span>
+              ))}
+            </p>
+          ) : null}
+
           {lead.reasoning ? (
             <p className="reasoning">
               <small>score {lead.fit_score}/4:</small> {lead.reasoning}

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 
+import IgHandle, { EmailNote, igProfileUrl } from '../../IgHandle';
 import { resolveCampaign } from '../../../lib/campaigns';
 import { getCreatorDetail, requeueCreatorSend, saveCreatorNote } from '../../../lib/queries';
 
@@ -39,7 +40,17 @@ export default async function CreatorDetailPage({ params, searchParams }) {
     <>
       <header className="topbar detail-header">
         <div>
-          <h1>@{creator.handle}</h1>
+          <h1>
+            <a
+              href={igProfileUrl(creator.handle, creator.profile_url)}
+              target="_blank"
+              rel="noreferrer"
+              title={`@${creator.handle} on Instagram`}
+            >
+              @{creator.handle}
+            </a>
+            <EmailNote emails={creator.emails} />
+          </h1>
           <p>{campaign}</p>
         </div>
       </header>
@@ -99,7 +110,9 @@ export default async function CreatorDetailPage({ params, searchParams }) {
                   <div>
                     <strong>{attempt.status}</strong>
                     <small>{attempt.provider} | {formatDate(attempt.created_at)}</small>
-                    {attempt.sender_username ? <small>sender @{attempt.sender_username}</small> : null}
+                    {attempt.sender_username ? (
+                      <small>sender <IgHandle handle={attempt.sender_username} /></small>
+                    ) : null}
                     {attempt.error ? <small className="run-error">{attempt.error}</small> : null}
                     {attempt.message ? <small>{attempt.message}</small> : null}
                   </div>
@@ -118,7 +131,9 @@ export default async function CreatorDetailPage({ params, searchParams }) {
                   <div>
                     <strong>{event.event_type}</strong>
                     <small>{formatDate(event.event_at)}</small>
-                    {event.source_seed ? <small>from @{event.source_seed}</small> : null}
+                    {event.source_seed ? (
+                      <small>from <IgHandle handle={event.source_seed} /></small>
+                    ) : null}
                   </div>
                 </div>
               ))}

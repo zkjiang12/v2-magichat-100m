@@ -1605,3 +1605,54 @@ select:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* IgHandle: @handle links + bio email notes */
+.ig-ext-link {
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 1px 4px;
+}
+
+.ig-email {
+  color: var(--muted);
+}
+
+.ig-email a {
+  color: inherit;
+}
+
+.ig-email a:hover {
+  color: var(--blue);
+}
+
+.detail-header h1 .ig-email {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.crm-lead-who .ig-handle-wrap,
+.crm-lead-who small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-lead-emails {
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.crm-lead-emails small {
+  color: var(--muted);
+}
+
+.creator-card-email {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

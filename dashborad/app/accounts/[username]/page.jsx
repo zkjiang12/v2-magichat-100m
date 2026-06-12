@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 
+import IgHandle, { igProfileUrl } from '../../IgHandle';
 import { CAMPAIGNS, resolveCampaign } from '../../../lib/campaigns';
 import { getSenderAccountDetail, updateSenderAccountSettings } from '../../../lib/queries';
 
@@ -34,7 +35,16 @@ export default async function SenderAccountPage({ params, searchParams }) {
     <>
       <header className="topbar detail-header">
         <div>
-          <h1>@{account.username}</h1>
+          <h1>
+            <a
+              href={igProfileUrl(account.username)}
+              target="_blank"
+              rel="noreferrer"
+              title={`@${account.username} on Instagram`}
+            >
+              @{account.username}
+            </a>
+          </h1>
           <p>sender account | {account.status}</p>
         </div>
       </header>
@@ -118,19 +128,11 @@ export default async function SenderAccountPage({ params, searchParams }) {
                     <td>{formatDate(attempt.created_at)}</td>
                     <td>
                       {attempt.recipient_handle ? (
-                        <>
-                          <Link href={`/creators/${attempt.recipient_handle}?campaign=${attempt.campaign || campaign}`}>
-                            @{attempt.recipient_handle}
-                          </Link>
-                          {' '}
-                          <a
-                            href={attempt.profile_url || `https://instagram.com/${attempt.recipient_handle}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            IG
-                          </a>
-                        </>
+                        <IgHandle
+                          handle={attempt.recipient_handle}
+                          href={`/creators/${attempt.recipient_handle}?campaign=${attempt.campaign || campaign}`}
+                          profileUrl={attempt.profile_url}
+                        />
                       ) : (
                         'unknown'
                       )}

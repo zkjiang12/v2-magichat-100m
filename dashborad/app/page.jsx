@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 
 import HourlyBarChartBody from './HourlyBarChartBody';
+import IgHandle, { EmailNote } from './IgHandle';
 
 import { CAMPAIGNS, resolveCampaign } from '../lib/campaigns';
 import {
@@ -652,9 +653,10 @@ function SenderAccountsPanel({ accounts, campaign, updateAction }) {
             {accounts.map((account) => (
               <tr key={account.username}>
                 <td>
-                  <Link href={`/accounts/${account.username}?campaign=${campaign}`}>
-                    @{account.username}
-                  </Link>
+                  <IgHandle
+                    handle={account.username}
+                    href={`/accounts/${account.username}?campaign=${campaign}`}
+                  />
                 </td>
                 <td>{account.sends_today || 0}/{account.daily_send_limit}</td>
                 <td>{account.total_sent || 0}</td>
@@ -1008,6 +1010,11 @@ function CreatorKanbanCard({ row }) {
           {reasoning}
         </div>
       </div>
+      {Array.isArray(row.emails) && row.emails.length > 0 ? (
+        <small className="creator-card-email">
+          <EmailNote emails={row.emails} />
+        </small>
+      ) : null}
       {row.queue_status || row.sent_at ? (
         <small>{row.queue_status || 'sent'}{row.sent_at ? ` | ${formatDate(row.sent_at)}` : ''}</small>
       ) : null}

@@ -3,8 +3,9 @@ import { CAMPAIGNS } from './campaigns';
 
 export const LEAD_STATUSES = ['needs_reply', 'interested', 'closed', 'churned'];
 
-// Every creator who has replied, newest reply first, with everything the CRM
-// row needs joined in. Leads with no lead_statuses row are 'needs_reply'.
+// Every creator who has replied to an Instantly campaign email, newest reply
+// first, with everything the CRM row needs joined in. Leads with no
+// lead_statuses row are 'needs_reply'.
 export async function getCrmLeads() {
   const result = await query(
     `
@@ -13,9 +14,11 @@ export async function getCrmLeads() {
           creator_id,
           campaign,
           count(*)::int as response_count,
-          max(coalesce(responded_at, scraped_at)) as last_responded_at,
-          min(coalesce(responded_at, scraped_at)) as first_responded_at
-        from dm_responses
+          max(coalesce(received_at, scraped_at)) as last_responded_at,
+          min(coalesce(received_at, scraped_at)) as first_responded_at,
+          (array_agg(lead_email order by coalesce(received_at, scraped_at) desc))[1] as lead_email
+        from email_responses
+        where creator_id is not null
         group by creator_id, campaign
       )
       select
@@ -27,11 +30,10 @@ export async function getCrmLeads() {
         r.response_count,
         r.last_responded_at,
         r.first_responded_at,
+        r.lead_email,
         ce.fit_score,
         ce.reasoning,
-        sq.message as outbound_message,
-        sq.sent_at,
-        acct.username as sender_username,
+        s.pushed_at,
         coalesce(ls.status, 'needs_reply') as lead_status,
         cn.note,
         msgs.messages
@@ -39,9 +41,15 @@ export async function getCrmLeads() {
       join creators c on c.id = r.creator_id
       left join creator_evaluations ce
         on ce.creator_id = r.creator_id and ce.campaign = r.campaign
-      left join send_queue sq
-        on sq.creator_id = r.creator_id and sq.campaign = r.campaign
-      left join sender_accounts acct on acct.id = sq.sender_account_id
+      left join lateral (
+        select pushed_at
+        from instantly_sync
+        where creator_id = r.creator_id
+          and campaign = r.campaign
+          and status = 'pushed'
+        order by pushed_at asc nulls last
+        limit 1
+      ) s on true
       left join lead_statuses ls
         on ls.creator_id = r.creator_id and ls.campaign = r.campaign
       left join campaign_notes cn
@@ -49,20 +57,20 @@ export async function getCrmLeads() {
       left join lateral (
         select json_agg(
           json_build_object(
-            'text', dr.message_text,
-            'responded_at', dr.responded_at,
-            'account', sa2.username
+            'subject', er.subject,
+            'text', er.body_text,
+            'responded_at', er.received_at,
+            'from', er.from_address
           )
-          order by coalesce(dr.responded_at, dr.scraped_at) desc
+          order by coalesce(er.received_at, er.scraped_at) desc
         ) as messages
         from (
           select *
-          from dm_responses
+          from email_responses
           where creator_id = r.creator_id and campaign = r.campaign
-          order by coalesce(responded_at, scraped_at) desc
+          order by coalesce(received_at, scraped_at) desc
           limit 20
-        ) dr
-        left join sender_accounts sa2 on sa2.id = dr.sender_account_id
+        ) er
       ) msgs on true
       order by r.last_responded_at desc
     `,
@@ -70,13 +78,15 @@ export async function getCrmLeads() {
   return result.rows;
 }
 
-// Sent vs replied per campaign, with the manual status breakdown.
+// Leads pushed to Instantly vs distinct creators who replied, per source
+// campaign, with the manual status breakdown.
 export async function getCrmCampaignStats() {
-  const [sends, responses] = await Promise.all([
+  const [pushes, responses] = await Promise.all([
     query(
       `
-        select campaign, count(*) filter (where status = 'sent')::int as sent
-        from send_queue
+        select campaign, count(distinct creator_id)::int as contacted
+        from instantly_sync
+        where status = 'pushed'
         group by campaign
       `,
     ),
@@ -89,36 +99,47 @@ export async function getCrmCampaignStats() {
           count(distinct r.creator_id) filter (where ls.status = 'interested')::int as interested,
           count(distinct r.creator_id) filter (where ls.status = 'closed')::int as closed,
           count(distinct r.creator_id) filter (where ls.status = 'churned')::int as churned
-        from dm_responses r
+        from email_responses r
         left join lead_statuses ls
           on ls.creator_id = r.creator_id and ls.campaign = r.campaign
+        where r.creator_id is not null
         group by r.campaign
       `,
     ),
   ]);
 
-  const sendsByCampaign = Object.fromEntries(sends.rows.map((row) => [row.campaign, row]));
+  const pushesByCampaign = Object.fromEntries(pushes.rows.map((row) => [row.campaign, row]));
   const responsesByCampaign = Object.fromEntries(responses.rows.map((row) => [row.campaign, row]));
   const names = [...new Set([
     ...CAMPAIGNS,
-    ...sends.rows.map((row) => row.campaign),
+    ...pushes.rows.map((row) => row.campaign),
     ...responses.rows.map((row) => row.campaign),
   ])];
 
   return names.map((name) => {
-    const sent = Number(sendsByCampaign[name]?.sent || 0);
+    const contacted = Number(pushesByCampaign[name]?.contacted || 0);
     const replied = Number(responsesByCampaign[name]?.responders || 0);
     return {
       campaign: name,
-      sent,
+      contacted,
       responders: replied,
-      replyRate: sent > 0 ? replied / sent : 0,
+      replyRate: contacted > 0 ? replied / contacted : 0,
       needsReply: Number(responsesByCampaign[name]?.needs_reply || 0),
       interested: Number(responsesByCampaign[name]?.interested || 0),
       closed: Number(responsesByCampaign[name]?.closed || 0),
       churned: Number(responsesByCampaign[name]?.churned || 0),
     };
   });
+}
+
+// Replies whose sender couldn't be matched to a pushed lead. They stay in
+// email_responses (attribution is retried on every check run); surfacing the
+// count keeps them from silently disappearing from the CRM.
+export async function getUnattributedReplyCount() {
+  const result = await query(
+    `select count(*)::int as count from email_responses where creator_id is null`,
+  );
+  return Number(result.rows[0]?.count || 0);
 }
 
 export async function setLeadStatus({ handle, campaign, status }) {

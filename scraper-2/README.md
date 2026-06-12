@@ -365,3 +365,28 @@ npm run instantly:sync -- --live
 Continuous operation: set `INSTANTLY_SYNC_ON_COMPLETE=true` and every *completed*
 crawl run pushes its campaign's new leads automatically (pauses/stops don't).
 Failed pushes are retried on later runs, max 3 attempts per lead.
+
+## Reply tracking + CRM
+
+Replies to Instantly campaign emails are pulled into Postgres
+(`email_responses`) and drive the dashboard CRM at `/crm` (statuses, notes,
+reply rate per campaign). Replying itself happens in Instantly's Unibox; the
+CRM is for triage.
+
+Setup (one-time): apply `sender-2/sql/migrations/018_add_email_responses.sql`.
+The job reuses the same `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID_*` env
+vars as the lead sync.
+
+```bash
+# Pull received emails for every mapped campaign (idempotent, safe to re-run):
+npm run instantly:replies
+
+# Just one campaign:
+npm run instantly:replies -- --campaign ugc_creators
+```
+
+Each received email is stored once (unique on the Instantly email id) and
+attributed back to a creator via `instantly_sync` (lead email + Instantly
+campaign id). Replies that can't be matched yet are stored unattributed and
+matched on later runs. Run it on a schedule (e.g. every 15 minutes alongside
+the other Cloud Run jobs) once campaigns are live.

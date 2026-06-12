@@ -1,11 +1,18 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 
-import { CAMPAIGNS } from '../../lib/campaigns';
 import { saveCreatorNote } from '../../lib/queries';
-import { LEAD_STATUSES, getCrmCampaignStats, getCrmLeads, setLeadStatus } from '../../lib/crm';
+import {
+  LEAD_STATUSES,
+  getCrmCampaignStats,
+  getCrmLeads,
+  getUnattributedReplyCount,
+  setLeadStatus,
+} from '../../lib/crm';
 
 export const dynamic = 'force-dynamic';
+
+const UNIBOX_URL = 'https://app.instantly.ai/app/unibox';
 
 const STATUS_LABELS = {
   needs_reply: 'needs reply',
@@ -17,16 +24,16 @@ const STATUS_LABELS = {
 export default async function CrmPage({ searchParams }) {
   const campaignFilter = String(searchParams?.campaign || 'all');
   const statusFilter = LEAD_STATUSES.includes(searchParams?.status) ? searchParams.status : 'all';
-  const accountFilter = String(searchParams?.account || 'all');
   const minScore = clampScore(searchParams?.minScore);
 
-  const [allLeads, campaignStats] = await Promise.all([getCrmLeads(), getCrmCampaignStats()]);
-
-  const accounts = [...new Set(allLeads.map((lead) => lead.sender_username).filter(Boolean))].sort();
+  const [allLeads, campaignStats, unattributed] = await Promise.all([
+    getCrmLeads(),
+    getCrmCampaignStats(),
+    getUnattributedReplyCount(),
+  ]);
 
   const scoped = allLeads.filter((lead) =>
     (campaignFilter === 'all' || lead.campaign === campaignFilter) &&
-    (accountFilter === 'all' || lead.sender_username === accountFilter) &&
     (minScore === 0 || Number(lead.fit_score || 0) >= minScore));
 
   const statusCounts = Object.fromEntries(LEAD_STATUSES.map((status) => [
@@ -38,7 +45,7 @@ export default async function CrmPage({ searchParams }) {
     ? scoped
     : scoped.filter((lead) => lead.lead_status === statusFilter);
 
-  const params = { campaign: campaignFilter, status: statusFilter, account: accountFilter, minScore };
+  const params = { campaign: campaignFilter, status: statusFilter, minScore };
 
   async function updateStatus(formData) {
     'use server';
@@ -64,10 +71,11 @@ export default async function CrmPage({ searchParams }) {
     <>
       <header className="topbar">
         <div>
-          <h1>CRM - DM Responses</h1>
+          <h1>CRM - Instantly replies</h1>
           <p>{leads.length} {statusFilter === 'all' ? 'leads' : STATUS_LABELS[statusFilter]} shown</p>
         </div>
         <div className="range-tabs">
+          <a href={UNIBOX_URL} target="_blank" rel="noreferrer" className="range-tab">Open Unibox</a>
           <Link href="/" className="range-tab">Campaign dashboard</Link>
         </div>
       </header>
@@ -84,7 +92,7 @@ export default async function CrmPage({ searchParams }) {
                 <h2>{stat.campaign}</h2>
                 <p className="crm-bignum">
                   {stat.responders}
-                  <span> / {stat.sent} sent</span>
+                  <span> / {stat.contacted} emailed</span>
                 </p>
                 <div className="crm-bar">
                   <div style={{ width: `${Math.min(100, Math.round(stat.replyRate * 100))}%` }} />
@@ -124,15 +132,6 @@ export default async function CrmPage({ searchParams }) {
             <input type="hidden" name="campaign" value={campaignFilter} />
             <input type="hidden" name="status" value={statusFilter} />
             <label>
-              <span>Account</span>
-              <select name="account" defaultValue={accountFilter}>
-                <option value="all">all accounts</option>
-                {accounts.map((username) => (
-                  <option key={username} value={username}>@{username}</option>
-                ))}
-              </select>
-            </label>
-            <label>
               <span>Min score</span>
               <select name="minScore" defaultValue={String(minScore)}>
                 <option value="0">any</option>
@@ -142,15 +141,22 @@ export default async function CrmPage({ searchParams }) {
               </select>
             </label>
             <button type="submit" className="secondary-button">Apply</button>
-            {(campaignFilter !== 'all' || statusFilter !== 'all' || accountFilter !== 'all' || minScore > 0) ? (
+            {(campaignFilter !== 'all' || statusFilter !== 'all' || minScore > 0) ? (
               <Link href="/crm" className="muted-copy">clear filters</Link>
             ) : null}
           </form>
 
+          {unattributed > 0 ? (
+            <p className="muted-copy">
+              {unattributed} repl{unattributed === 1 ? 'y' : 'ies'} couldn&apos;t be matched to a pushed
+              lead yet (kept in <code>email_responses</code>; matching is retried on every check run).
+            </p>
+          ) : null}
+
           {leads.length === 0 ? (
             <p className="empty-state">
-              No responses recorded yet. Run <code>npm run check-inbox</code> in sender-2 to pull replies
-              from your sender accounts.
+              No replies recorded yet. Run <code>npm run instantly:replies</code> in scraper-2 to pull
+              replies from your Instantly campaigns.
             </p>
           ) : (
             <div className="crm-lead-list">
@@ -186,31 +192,38 @@ function LeadRow({ lead, updateStatus, saveNote }) {
         ) : (
           <span className="score-pill">-</span>
         )}
-        <span className="crm-lead-preview">{latest ? latest.text : ''}</span>
-        <span className="crm-lead-account">{lead.sender_username ? `@${lead.sender_username}` : ''}</span>
+        <span className="crm-lead-preview">{latest ? (latest.subject || latest.text) : ''}</span>
+        <span className="crm-lead-account">{lead.lead_email || ''}</span>
         <span className={`crm-status ${lead.lead_status}`}>{STATUS_LABELS[lead.lead_status]}</span>
         <span className="crm-lead-when">{formatRelative(lead.last_responded_at)}</span>
       </summary>
 
       <div className="crm-lead-detail">
         <div>
-          <h3>Their messages</h3>
+          <h3>Their replies</h3>
           <ul className="crm-messages">
             {messages.map((message, index) => (
               <li key={index}>
+                {message.subject ? <small>{message.subject}</small> : null}
                 <p>{message.text}</p>
-                <small>
-                  {formatDate(message.responded_at)}
-                  {message.account ? ` · to @${message.account}` : ''}
-                </small>
+                <small>{formatDate(message.responded_at)}</small>
               </li>
             ))}
           </ul>
-          {lead.outbound_message ? (
-            <p className="crm-outbound">
-              <small>our DM{lead.sent_at ? ` (${formatDate(lead.sent_at)})` : ''}:</small> {lead.outbound_message}
-            </p>
-          ) : null}
+          <p className="crm-outbound">
+            <small>
+              {lead.pushed_at ? `pushed to Instantly ${formatDate(lead.pushed_at)} · ` : ''}
+              reply from{' '}
+              <a
+                href={`${UNIBOX_URL}?search=${encodeURIComponent(lead.lead_email || '')}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {lead.lead_email}
+              </a>
+              {' '}- answer in Unibox
+            </small>
+          </p>
         </div>
 
         <div>
@@ -248,11 +261,10 @@ function LeadRow({ lead, updateStatus, saveNote }) {
   );
 }
 
-function crmHref({ campaign, status, account, minScore }) {
+function crmHref({ campaign, status, minScore }) {
   const params = new URLSearchParams();
   if (campaign && campaign !== 'all') params.set('campaign', campaign);
   if (status && status !== 'all') params.set('status', status);
-  if (account && account !== 'all') params.set('account', account);
   if (minScore) params.set('minScore', String(minScore));
   const qs = params.toString();
   return qs ? `/crm?${qs}` : '/crm';

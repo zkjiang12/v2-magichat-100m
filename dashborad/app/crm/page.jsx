@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import Link from 'next/link';
 
+import IgHandle, { EmailNote } from '../IgHandle';
 import {
   LEAD_STATUSES,
   getCrmCampaignStats,
@@ -170,8 +171,15 @@ function LeadRow({ lead }) {
     <details className="crm-lead">
       <summary>
         <span className="crm-lead-who">
-          <Link href={`/creators/${lead.handle}?campaign=${lead.campaign}`}>@{lead.handle}</Link>
-          <small>{lead.campaign}</small>
+          <IgHandle
+            handle={lead.handle}
+            href={`/creators/${lead.handle}?campaign=${lead.campaign}`}
+            profileUrl={lead.profile_url}
+          />
+          <small>
+            {lead.campaign}
+            <EmailNote emails={lead.emails} />
+          </small>
         </span>
         {lead.fit_score ? (
           <span className={`score-pill score-${lead.fit_score}`}>{lead.fit_score}</span>
@@ -213,6 +221,18 @@ function LeadRow({ lead }) {
         </div>
 
         <div>
+          {Array.isArray(lead.emails) && lead.emails.length > 0 ? (
+            <p className="crm-lead-emails">
+              <small>bio email:</small>{' '}
+              {lead.emails.map((email, index) => (
+                <span key={email}>
+                  {index > 0 ? ', ' : ''}
+                  <a href={`mailto:${email}`}>{email}</a>
+                </span>
+              ))}
+            </p>
+          ) : null}
+
           {lead.reasoning ? (
             <p className="reasoning">
               <small>score {lead.fit_score}/4:</small> {lead.reasoning}

@@ -26,6 +26,7 @@ export async function getCrmLeads() {
         c.display_name,
         c.profile_url,
         c.followers_count,
+        c.emails,
         r.campaign,
         r.response_count,
         r.last_responded_at,

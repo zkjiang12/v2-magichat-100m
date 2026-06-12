@@ -858,6 +858,7 @@ async function queryCreators(campaign) {
         c.display_name,
         c.followers_count,
         c.source_seed,
+        c.emails,
         ce.fit_score,
         ce.list,
         ce.reasoning,

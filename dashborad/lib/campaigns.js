@@ -1,4 +1,4 @@
-export const CAMPAIGNS = ['day_in_life_creators', 'ugc_creators'];
+export const CAMPAIGNS = ['day_in_life_creators', 'day_in_life_us', 'ugc_creators'];
 
 export function resolveCampaign(value) {
   if (CAMPAIGNS.includes(value)) return value;

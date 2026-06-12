@@ -1,4 +1,5 @@
 import { detectHardNoAccount } from './account-filter.js';
+import { collectCreatorEmails } from './contacts.js';
 
 export function buildScrapeHardNoReview({ scrapedProfile, config }) {
   return (
@@ -38,6 +39,20 @@ export function buildProfileHardNoReview({ scrapedProfile, config }) {
       list: 'reject',
       reasoning: `Hard no: ${accountHardNo.reason}. Businesses, event pages, venues, shops, brands, and non-creator pages do not qualify.`,
     };
+  }
+
+  if (config.instagramRequireEmail) {
+    const emails = collectCreatorEmails({
+      bio: scrapedProfile.creator.bio,
+      publicEmail: scrapedProfile.creator.publicEmail,
+    });
+    if (emails.length === 0) {
+      return {
+        fitScore: 1,
+        list: 'reject',
+        reasoning: 'Hard no: no contactable email in bio or public email field, and this campaign requires one.',
+      };
+    }
   }
 
   return null;

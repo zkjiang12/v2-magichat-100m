@@ -60,6 +60,14 @@ export function createInstantlyClient({ apiKey, fetchImpl = fetch }) {
       });
     },
 
+    async deleteLead(leadId) {
+      return request({
+        method: 'DELETE',
+        path: `/leads/${leadId}`,
+        label: `Instantly delete lead ${leadId}`,
+      });
+    },
+
     async listEmails({ campaignId, emailType = 'received', maxPages = 50 } = {}) {
       const emails = [];
       const seenCursors = new Set();

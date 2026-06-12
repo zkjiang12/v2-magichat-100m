@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 
 import './config.js';
-import { listCampaignNames } from './campaigns/index.js';
+import { getCampaignDefinition, listCampaignNames } from './campaigns/index.js';
 import { createInstantlyClient, isDuplicateLeadError } from './instantly.js';
 
 const DEFAULT_MIN_FIT_SCORE = 3;
@@ -14,6 +14,20 @@ const MAX_PUSH_ATTEMPTS = 3;
 
 export function instantlyCampaignEnvKey(campaign) {
   return `INSTANTLY_CAMPAIGN_ID_${campaign.toUpperCase()}`;
+}
+
+// Routing lists a campaign's accept() rule admits, derived by probing the
+// campaign definition so the sync can't drift from the scraper's accept gate
+// (day_in_life_us accepts only US-evidence lists; a score-only sync would
+// push no_us_evidence creators into a US cold-email campaign). Returns null
+// when the campaign accepts every list (or is rule-scored with no lists) —
+// i.e. no SQL restriction needed.
+export function instantlyAcceptedLists(campaign) {
+  const definition = getCampaignDefinition(campaign);
+  const listValues = definition.scoring?.listValues;
+  if (!Array.isArray(listValues)) return null;
+  const allowed = listValues.filter((list) => definition.accept({ fitScore: 4, list }));
+  return allowed.length === listValues.length ? null : allowed;
 }
 
 export function resolveCampaignMapping({ env = process.env, campaigns = listCampaignNames() } = {}) {
@@ -68,7 +82,25 @@ export async function runInstantlySync({
   try {
     // Excludes leads already pushed/skipped, and failed leads that exhausted
     // their retry budget (so a permanently-bad email can't starve the queue).
-    const params = [minFitScore, mappedCampaigns, MAX_PUSH_ATTEMPTS];
+    const params = [minFitScore, MAX_PUSH_ATTEMPTS];
+    const campaignConditions = [];
+    const unrestricted = [];
+    for (const name of mappedCampaigns) {
+      const lists = instantlyAcceptedLists(name);
+      if (lists) {
+        params.push(name, lists);
+        campaignConditions.push(
+          `(ce.campaign = $${params.length - 1} and ce.list = any($${params.length}))`,
+        );
+        log(`[instantly] ${name}: restricted to accepted lists (${lists.join(', ')})`);
+      } else {
+        unrestricted.push(name);
+      }
+    }
+    if (unrestricted.length > 0) {
+      params.push(unrestricted);
+      campaignConditions.push(`ce.campaign = any($${params.length})`);
+    }
     let limitClause = '';
     if (limit) {
       params.push(limit);
@@ -89,14 +121,14 @@ export async function runInstantlySync({
         join creators c on c.id = ce.creator_id
         cross join lateral unnest(c.emails) as e(email)
         where ce.fit_score >= $1
-          and ce.campaign = any($2)
+          and (${campaignConditions.join(' or ')})
           and not exists (
             select 1
             from instantly_sync s
             where s.creator_id = c.id
               and s.campaign = ce.campaign
               and s.email = e.email
-              and (s.status in ('pushed', 'skipped') or s.attempts >= $3)
+              and (s.status in ('pushed', 'skipped') or s.attempts >= $2)
           )
         order by ce.fit_score desc, c.followers_count desc nulls last
         ${limitClause}
